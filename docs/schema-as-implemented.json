@@ -1,0 +1,1003 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zepp-notifier.local/schema-as-implemented.json",
+  "title": "Relay payloads as implemented on 2026-11-05 (v1 sender API)",
+  "description": "Facts about the running code (server/spike_server.py), verified against the live relay by `tools/schema-check.py --live`. Behaviour is additionally covered by `tools/test-contract.py` (53 assertions).",
+  "$defs": {
+    "action": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Packed into the button param as i=<id>&a=<action>; relay does NOT validate the charset or length today."
+        },
+        "label": {
+          "type": "string",
+          "description": "Truncated to 18 chars by the watch at render time, not by the relay."
+        }
+      },
+      "additionalProperties": false
+    },
+    "notifyRequest": {
+      "type": "object",
+      "description": "POST /v1/notify. Validated as of 2026-11-05: title/body truncate, everything that changes meaning is rejected with a field pointer.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "1-40 chars; truncated, default 'Notification'."
+        },
+        "body": {
+          "type": "string",
+          "description": "0-160 chars; truncated."
+        },
+        "vibrate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "0-5 severity channel. 0 means default (it vibrates); there is no silent value."
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "key": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Replacement + retry idempotency."
+        },
+        "tag": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Routing label, dotted prefix filterable."
+        },
+        "expires_at": {
+          "type": "integer",
+          "description": "Epoch ms; the relay drops the item at serve time once past."
+        },
+        "not_before": {
+          "type": "integer",
+          "description": "Epoch ms; the relay will not serve it before then."
+        },
+        "extras": {
+          "type": "object",
+          "description": "Opaque flat string map, carried into facts, never interpreted."
+        },
+        "retract": {
+          "type": "boolean",
+          "description": "Stored, inert until v2."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "title": "\ud83d\udc8a Evening dose",
+          "body": "2 tablets",
+          "vibrate": 4,
+          "actions": [
+            {
+              "id": "got_it",
+              "label": "Got it"
+            }
+          ],
+          "key": "med:2026-11-05:1900",
+          "tag": "meds.evening",
+          "expires_at": 1793921400000,
+          "not_before": 1793919600000,
+          "extras": {
+            "client::display": "summary"
+          }
+        }
+      ]
+    },
+    "notification": {
+      "type": "object",
+      "description": "The stored item. GET /v1/notification/<id> returns this; `fingerprint` is never exposed.",
+      "required": [
+        "id",
+        "title",
+        "body",
+        "vibrate",
+        "actions",
+        "created_at",
+        "state",
+        "answers"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9]+-[0-9a-f]{6}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "vibrate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "not_before": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "extras": {
+          "type": "object"
+        },
+        "retract": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "rendered",
+            "answered",
+            "expired",
+            "abandoned"
+          ]
+        },
+        "supersedes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "superseded_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when a later item with the same key replaced this one after it had rendered."
+        },
+        "served_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "served_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rendered_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expired_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "acked_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "answer": {
+          "type": "string",
+          "description": "Legacy mirror of the latest answer; use answers[] instead."
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/answer"
+          },
+          "description": "Append-only. Identical (id, action) retries collapse."
+        },
+        "centre_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Notification-centre id returned by notify(), reported in /v1/seen. Relay-side so the watch needs no persistence."
+        },
+        "cancelled_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Set once the device confirms it deleted the notification."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "id": "44-069fc5",
+          "seq": 44,
+          "key": "med:2026-11-05:1900",
+          "tag": "meds.evening",
+          "title": "\ud83d\udc8a Evening dose",
+          "body": "2 tablets",
+          "vibrate": 4,
+          "actions": [
+            {
+              "id": "got_it",
+              "label": "Got it"
+            }
+          ],
+          "expires_at": 1793921400000,
+          "not_before": null,
+          "extras": {},
+          "retract": false,
+          "created_at": 1793919600000,
+          "state": "answered",
+          "supersedes": null,
+          "superseded_by": null,
+          "served_count": 1,
+          "served_at": 1793919641000,
+          "rendered_at": 1793919644000,
+          "expired_at": null,
+          "acked_at": 1793919705000,
+          "answer": "got_it",
+          "answers": [
+            {
+              "action": "got_it",
+              "at": 1793919705000,
+              "seq": 1
+            }
+          ]
+        }
+      ]
+    },
+    "inboxResponse": {
+      "type": "object",
+      "description": "GET /v1/inbox?device=<id>[&peek=1]. peek=1 means a cache refresh: no serve accounting, no stuck reporting.",
+      "required": [
+        "cursor",
+        "items",
+        "server_time",
+        "mode",
+        "stuck"
+      ],
+      "properties": {
+        "cursor": {
+          "type": "integer",
+          "description": "Always 0: the cursor model was removed when delivery became ack-driven."
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/$defs/inboxItem"
+          }
+        },
+        "server_time": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "const": "ack-driven"
+        },
+        "stuck": {
+          "type": "boolean"
+        },
+        "stuck_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        },
+        "cancel": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Notification-centre ids to delete: answered, superseded, or expired with retract. Repeats every wake until the device confirms, because a lost response must cost a retry rather than strand clutter."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "cursor": 0,
+          "items": [],
+          "cancel": [
+            42
+          ],
+          "server_time": 1793909932786,
+          "mode": "ack-driven",
+          "stuck": false,
+          "stuck_ids": []
+        }
+      ]
+    },
+    "inboxItem": {
+      "type": "object",
+      "description": "What the watch renders. Deliberately thinner than the stored notification: no timestamps, no state.",
+      "required": [
+        "id",
+        "title",
+        "body",
+        "vibrate",
+        "actions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9]+-[0-9a-f]{6}$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "vibrate": {
+          "type": "integer"
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "seenRequest": {
+      "type": "object",
+      "description": "POST /v1/seen \u2014 the watch reporting what actually rendered. This is the only thing that stops re-serving.",
+      "required": [
+        "ids"
+      ],
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "centre": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "relay id -> notification-centre id from notify()."
+        },
+        "cancelled": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Centre ids the device actually deleted."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "ids": [
+            "44-069fc5"
+          ],
+          "centre": {
+            "44-069fc5": 42
+          },
+          "cancelled": [],
+          "live": [
+            42
+          ]
+        }
+      ]
+    },
+    "seenResponse": {
+      "type": "object",
+      "required": [
+        "ok",
+        "marked"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "marked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Items newly marked rendered; 0 for a repeat report."
+        },
+        "mapped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancelled": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ackRequest": {
+      "type": "object",
+      "description": "POST /v1/ack \u2014 a button press.",
+      "required": [
+        "id",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "integer",
+          "description": "Device timestamp in ms, used for transit_ms."
+        },
+        "replay": {
+          "type": "boolean",
+          "description": "Set when the side is draining its outbox after a relay outage."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "id": "44-069fc5",
+          "action": "got_it",
+          "ts": 1793889705786
+        }
+      ]
+    },
+    "ackResponse": {
+      "type": "object",
+      "required": [
+        "ok",
+        "toast",
+        "action"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "toast": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "healthResponse": {
+      "type": "object",
+      "description": "GET /health \u2014 open, no token. Carries chain liveness because a stopped chain looks like an empty queue.",
+      "required": [
+        "ok",
+        "auth",
+        "chain",
+        "queue_depth",
+        "next_seq",
+        "oldest_seq"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "auth": {
+          "type": "boolean"
+        },
+        "chain": {
+          "$ref": "#/$defs/chain"
+        },
+        "queue_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "oldest_seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "ok": true,
+          "auth": false,
+          "chain": {
+            "chain": "online",
+            "last_poll_age_s": 14,
+            "queue_depth": 0
+          },
+          "queue_depth": 0,
+          "queued": 3,
+          "next_seq": 44,
+          "oldest_seq": 1
+        }
+      ]
+    },
+    "answer": {
+      "type": "object",
+      "required": [
+        "action",
+        "at",
+        "seq"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "at": {
+          "type": "integer"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "action": "got_it",
+          "at": 1793919705000,
+          "seq": 1
+        }
+      ]
+    },
+    "fact": {
+      "type": "object",
+      "description": "One line of the sender-facing log. Operator telemetry (poll.served, side.online) is deliberately absent. `dismissed` means rendered, never answered, and no longer in the centre: swiped away.",
+      "required": [
+        "seq",
+        "kind",
+        "id",
+        "at"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "queued",
+            "rendered",
+            "answered",
+            "replaced",
+            "expired",
+            "abandoned"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "type": "integer"
+        },
+        "notification": {
+          "$ref": "#/$defs/notification"
+        },
+        "action": {
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "ttl"
+          ]
+        },
+        "served": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "seq": 1201,
+          "kind": "answered",
+          "id": "44-069fc5",
+          "key": "med:2026-11-05:1900",
+          "tag": "meds.evening",
+          "at": 1793919705000,
+          "action": "got_it"
+        }
+      ]
+    },
+    "eventsResponse": {
+      "type": "object",
+      "required": [
+        "facts",
+        "next",
+        "more",
+        "oldest_seq"
+      ],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact"
+          }
+        },
+        "next": {
+          "type": "string"
+        },
+        "more": {
+          "type": "boolean"
+        },
+        "oldest_seq": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "facts": [
+            {
+              "seq": 1201,
+              "kind": "answered",
+              "id": "44-069fc5",
+              "key": "med:2026-11-05:1900",
+              "tag": "meds.evening",
+              "at": 1793919705000,
+              "action": "got_it"
+            }
+          ],
+          "next": "1201",
+          "more": false,
+          "oldest_seq": 1
+        }
+      ]
+    },
+    "notifyResponse": {
+      "type": "object",
+      "required": [
+        "id",
+        "state",
+        "duplicate",
+        "replaced",
+        "chain"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "rendered",
+            "answered",
+            "expired",
+            "abandoned"
+          ]
+        },
+        "duplicate": {
+          "type": "boolean"
+        },
+        "replaced": {
+          "type": "boolean"
+        },
+        "supersedes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chain": {
+          "$ref": "#/$defs/chain"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "id": "44-069fc5",
+          "key": "med:2026-11-05:1900",
+          "tag": "meds.evening",
+          "state": "queued",
+          "duplicate": false,
+          "replaced": false,
+          "supersedes": null,
+          "chain": {
+            "chain": "online",
+            "last_poll_age_s": 14,
+            "queue_depth": 0
+          }
+        }
+      ]
+    },
+    "chain": {
+      "type": "object",
+      "required": [
+        "chain",
+        "last_poll_age_s",
+        "queue_depth"
+      ],
+      "properties": {
+        "chain": {
+          "enum": [
+            "online",
+            "stale",
+            "silent"
+          ]
+        },
+        "last_poll_age_s": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queue_depth": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "chain": "online",
+          "last_poll_age_s": 14,
+          "queue_depth": 0
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_vibrate",
+                "invalid_actions",
+                "invalid_action_id",
+                "invalid_action_label",
+                "too_many_actions",
+                "invalid_key",
+                "invalid_tag",
+                "invalid_expires_at",
+                "invalid_not_before",
+                "invalid_extras",
+                "invalid_since",
+                "invalid_wait",
+                "unauthorized",
+                "not_found",
+                "cursor_too_old",
+                "queue_full",
+                "forbidden",
+                "forbidden_tag",
+                "prefix_taken",
+                "invalid_name"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "field": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "error": {
+            "code": "invalid_action_label",
+            "message": "label must be 1-18 chars (the watch truncates at 18)",
+            "field": "actions[0].label"
+          }
+        }
+      ]
+    },
+    "app": {
+      "type": "object",
+      "description": "A sender application. The plaintext token is returned exactly once at creation (Gotify-style) and never stored; only token_preview is listable.",
+      "required": [
+        "id",
+        "name",
+        "prefix",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "token_preview": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "id": 1,
+          "name": "Meds",
+          "prefix": "meds",
+          "token_preview": "Ab3d...9z",
+          "created_at": 1793919600000
+        }
+      ]
+    },
+    "createAppRequest": {
+      "type": "object",
+      "required": [
+        "name",
+        "prefix"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "name": "Meds",
+          "prefix": "meds"
+        }
+      ]
+    },
+    "createAppResponse": {
+      "type": "object",
+      "description": "token is shown exactly once; lose it and you revoke + recreate.",
+      "required": [
+        "id",
+        "name",
+        "prefix",
+        "token"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "id": 1,
+          "name": "Meds",
+          "prefix": "meds",
+          "token": "Ab3dEfGhIjKlMnOpQrStUvWx"
+        }
+      ]
+    },
+    "appsResponse": {
+      "type": "object",
+      "required": [
+        "apps"
+      ],
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/app"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "apps": [
+            {
+              "id": 1,
+              "name": "Meds",
+              "prefix": "meds",
+              "token_preview": "Ab3d...9z",
+              "created_at": 1793919600000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

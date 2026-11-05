@@ -1,0 +1,70 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 10262217,
+    "appName": "Notify Relay",
+    "appType": "app",
+    "version": {
+      "code": 67,
+      "name": "0.9.0"
+    },
+    "icon": "icon.png",
+    "vender": "personal",
+    "description": "Spike: alarm-driven tick service, device-pull notifications"
+  },
+  "permissions": [
+    "data:os.device.info",
+    "device:os.local_storage",
+    "device:os.notification",
+    "device:os.bg_service",
+    "device:os.alarm"
+  ],
+  "runtime": {
+    "apiVersion": {
+      "compatible": "4.0",
+      "target": "4.0",
+      "minVersion": "4.0"
+    }
+  },
+  "targets": {
+    "active-2-square": {
+      "module": {
+        "page": {
+          "pages": [
+            "page/index",
+            "page/log"
+          ]
+        },
+        "app-side": {
+          "path": "app-side/index"
+        },
+        "setting": {
+          "path": "setting/index"
+        },
+        "app-service": {
+          "services": [
+            "app-service/notifier"
+          ]
+        }
+      },
+      "platforms": [
+        {
+          "deviceSource": 10223872
+        },
+        {
+          "deviceSource": 10223873
+        },
+        {
+          "deviceSource": 10223875
+        }
+      ],
+      "designWidth": 390
+    }
+  },
+  "i18n": {
+    "en-US": {
+      "appName": "Notify Relay"
+    }
+  },
+  "defaultLanguage": "en-US"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "zepp-notifier-watch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zepp OS spike: server-driven notifications with actionable buttons",
+  "_moduleAliases": {
+    "zeppos-app-utils": "node_modules/@zeppos/zeus-cli/private-modules/zeppos-app-utils"
+  },
+  "scripts": {
+    "build": "zeus build",
+    "preview": "zeus preview",
+    "check": "node tools/undef-check.mjs",
+    "verify": "node tools/undef-check.mjs && zeus build"
+  },
+  "devDependencies": {
+    "@zeppos/zeus-cli": "1.9.3"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "baseUrl": ".",
+    "paths": {
+      "@zos/*": ["node_modules/@zeppos/device-types/dist/*"]
+    }
+  },
+  "include": ["**/*.js", "**/*.d.ts"]
+}

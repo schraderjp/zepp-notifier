@@ -1,0 +1,486 @@
+// Alarm scheduling, shared by the page and the tick service.
+//
+// No `queryPermission`/`requestPermission` here: those are page-facing APIs and
+// do not belong in a background context. Everything is `@zos/alarm` +
+// `@zos/storage` + `getPackageInfo`, which both runtimes can use.
+//
+// MEASURED (0.4.10 device log):
+//
+//   alarms count=3
+//   [38,39,40]
+//
+// `getAllAlarms()` returns **bare ids**, not records. Every "the alarm does not
+// exist" conclusion before 0.4.11 was my filter looking for `entry.file` on a
+// number. Two consequences:
+//
+//   * there is no way to ask the OS which alarms belong to this app, so we keep
+//     our own registry of the ids we created and treat that as the truth
+//   * dedupe/cancel must go through that registry; matching by file never worked
+//
+// Also measured: `alarmMgr.get(id)` throws a TypeError for both `get(id)` and
+// `get()`, so it is not used anywhere.
+
+import { getPackageInfo } from '@zos/app'
+import { localStorage } from '@zos/storage'
+import * as alarmMgr from '@zos/alarm'
+
+export const NOTIFIER_SERVICE = 'app-service/notifier'
+export const MODE_REPEAT = 'repeat'
+export const MODE_ONESHOT = 'oneshot'
+
+const IDS_KEY = 'relay_alarm_ids'
+const MAX_IDS = 10
+
+// Steady-state cadence in seconds: how far out each oneshot wake schedules the
+// next. 60 s is the battery default; 20-30 s buys latency at 2-3x the wakes.
+// Delivery stays wake-quantised either way: nothing arrives faster than this.
+const CADENCE_KEY = 'relay_cadence'
+const DEFAULT_CADENCE = 60
+const MIN_CADENCE = 20
+const MAX_CADENCE = 120
+export const CADENCE_STEPS = [20, 30, 60]
+
+export function readCadence() {
+  try {
+    const n = Number(localStorage.getItem(CADENCE_KEY))
+    if (!isFinite(n)) return DEFAULT_CADENCE
+    return Math.min(MAX_CADENCE, Math.max(MIN_CADENCE, Math.floor(n)))
+  } catch (e) {
+    return DEFAULT_CADENCE
+  }
+}
+
+export function writeCadence(sec) {
+  try {
+    const n = Math.min(MAX_CADENCE, Math.max(MIN_CADENCE, Math.floor(Number(sec))))
+    if (!isFinite(n)) return readCadence()
+    localStorage.setItem(CADENCE_KEY, String(n))
+    return n
+  } catch (e) {
+    return readCadence()
+  }
+}
+
+export function cycleCadence() {
+  const cur = readCadence()
+  const i = CADENCE_STEPS.indexOf(cur)
+  const next = CADENCE_STEPS[(i + 1) % CADENCE_STEPS.length] || DEFAULT_CADENCE
+  writeCadence(next)
+  return next
+}
+
+// "repeat_duration" is reminders PER PERIOD (docs, default 1), not a count of
+// repeats: 1 = one reminder per one-minute period = every minute.
+const REPEAT_DURATION = 1
+
+// REBOOT TEST (0.8.0): STORE=true so alarms survive a restart. The storm that
+// forced this to false in 0.4.23 came from arming a persistent REPEAT alarm on every
+// wake without consuming the old one. The test runs a ONESHOT chain only (each wake
+// cancels the stored id, then sets one delay-60 alarm), so at most one alarm exists
+// and a reboot can at most produce one extra wake. Do NOT arm repeat mode on this
+// build. The >=3 refusal and the service storm guard (>3 -> cancel all + disarm)
+// stay on regardless.
+const STORE = true
+
+// A wake may never be scheduled closer than this. `delay: 0` would make a chain
+// of immediate re-wakes, which is the same storm by another route.
+const MIN_DELAY_SEC = 20
+
+function clampDelay(value) {
+  const n = Number(value)
+  if (!isFinite(n) || n <= 0) return 30
+  return Math.max(MIN_DELAY_SEC, Math.floor(n))
+}
+
+// start_time/end_time bound when a repeat alarm is allowed to fire at all
+// ("only takes effect during the repeat time period"). A day at a time; the tick
+// re-arms on every wake anyway, which extends the window as it goes.
+const REPEAT_WINDOW_SEC = 24 * 60 * 60
+
+function appId() {
+  try {
+    return getPackageInfo().appId
+  } catch (e) {
+    return 0
+  }
+}
+
+function idOf(entry) {
+  if (typeof entry === 'number') return entry
+  if (typeof entry === 'string' && entry && !isNaN(Number(entry))) return Number(entry)
+  if (entry && typeof entry === 'object') return entry.id !== undefined ? entry.id : null
+  return null
+}
+
+// Ids currently pending in the OS. Empty array on any failure: a runtime without
+// getAllAlarms() is handled by the registry alone.
+export function pendingIds() {
+  let list = []
+  try {
+    list = alarmMgr.getAllAlarms() || []
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(list)) return []
+  const out = []
+  for (const entry of list) {
+    const id = idOf(entry)
+    if (id !== null && id !== undefined) out.push(id)
+  }
+  return out
+}
+
+// --- our own registry -------------------------------------------------------
+
+function readIds() {
+  try {
+    const raw = localStorage.getItem(IDS_KEY) || '[]'
+    const list = JSON.parse(raw)
+    return Array.isArray(list) ? list.map(Number).filter((n) => !isNaN(n)) : []
+  } catch (e) {
+    return []
+  }
+}
+
+function writeIds(list) {
+  try {
+    localStorage.setItem(IDS_KEY, JSON.stringify(list.slice(-MAX_IDS)))
+  } catch (e) {}
+}
+
+export function ourIds() {
+  return readIds()
+}
+
+export function rememberId(id) {
+  if (id === undefined || id === null) return
+  const list = readIds()
+  const n = Number(id)
+  if (isNaN(n)) return
+  if (list.indexOf(n) < 0) list.push(n)
+  writeIds(list)
+}
+
+// Our ids that are still pending - the only "is it armed?" answer available.
+export function armedIds() {
+  const pending = pendingIds()
+  if (!pending.length) return []
+  return readIds().filter((id) => pending.indexOf(id) >= 0)
+}
+
+function forgetId(id) {
+  writeIds(readIds().filter((n) => n !== Number(id)))
+}
+
+// Cancel EVERY alarm we created, not just the last one: stale ids from earlier
+// JS contexts are invisible to us but still pending in the OS, and they were
+// accumulating one per press before this existed.
+export function cancelAllTickAlarms() {
+  const ids = readIds()
+  let cancelled = 0
+  for (const id of ids) {
+    try {
+      alarmMgr.cancel(id)
+      cancelled += 1
+    } catch (e) {}
+  }
+  // Sweep: alarms created before the registry existed (0.4.0-0.4.10) are still
+  // pending in the OS and invisible to us, and a stuck past-dated alarm is a
+  // plausible reason nothing fires. In this spike every pending alarm belongs to
+  // this app (measured: the table held exactly the ids we created), and this is
+  // user-initiated via Disarm, so sweep them and report how many.
+  let swept = 0
+  if (!ids.length) {
+    for (const id of pendingIds()) {
+      try {
+        alarmMgr.cancel(id)
+        swept += 1
+      } catch (e) {}
+    }
+  }
+  writeIds([])
+  return { cancelled, swept, found: ids.length, pending: pendingIds() }
+}
+
+export function cancelStored() {
+  const ids = readIds()
+  if (!ids.length) return false
+  const last = ids[ids.length - 1]
+  try {
+    alarmMgr.cancel(last)
+  } catch (e) {}
+  forgetId(last)
+  return true
+}
+
+// --- scheduling -------------------------------------------------------------
+
+function onceValue() {
+  try {
+    return typeof alarmMgr.ONCE === 'number' ? alarmMgr.ONCE : 0
+  } catch (e) {
+    return 0
+  }
+}
+
+function repeatMinuteValue() {
+  try {
+    return typeof alarmMgr.REPEAT_MINUTE === 'number' ? alarmMgr.REPEAT_MINUTE : 1
+  } catch (e) {
+    return 1
+  }
+}
+
+function trySet(alarm) {
+  try {
+    const id = alarmMgr.set(alarm)
+    const ok = id !== undefined && id !== null && id !== false
+    return ok ? { ok: true, id } : { ok: false, err: 'set() returned ' + String(id) }
+  } catch (e) {
+    return { ok: false, err: String((e && (e.message || e.reason)) || e) }
+  }
+}
+
+// `shape` reports which argument form the OS accepted.
+//
+// MEASURED / FIELD-VERIFIED: the alarm option that actually fires on real
+// hardware is the one from SashaCX75's Weather-service, reproduced in
+// zepp-health/discussions/393:
+//
+//   { url: 'app-service/background_service',
+//     repeat_type: alarmMgr.REPEAT_MINUTE, repeat_period: 5, repeat_duration: 2,
+//     store: STORE, delay: 30 }
+//
+// No `appid`, no `file`, no `date`. We had been sending `appid` + `file` + `date`
+// (the shape from the *notification* sample, which is a different feature): the OS
+// accepts that record and returns an id, then never schedules it. That is exactly
+// the "id, stored, never fires" state we kept measuring.
+export function setTickAlarm(options) {
+  const show = !!(options && options.show)
+  // REPEAT is fenced off (decision 2026-11-05): a persistent REPEAT alarm re-armed
+  // every wake is the 0.4.23 storm shape, and with STORE=true a reboot would not
+  // clear it. The oneshot chain gives the same 60 s cadence with at most one alarm
+  // in existence. Refuse loudly rather than silently downgrading, so a caller that
+  // asks for repeat learns it did not get it.
+  if (options && options.mode === MODE_REPEAT) {
+    return {
+      ok: false,
+      reason: 'repeat fenced off: use oneshot (see docs/status.md 0.8.x)',
+      mode: MODE_REPEAT,
+      show,
+      fenced: true,
+    }
+  }
+  const mode = MODE_ONESHOT
+  const delaySec = clampDelay(options && options.delaySec)
+  const param = 'via=alarm' + (mode === MODE_ONESHOT ? '&mode=oneshot' : '') + (show ? '&show=1' : '')
+  const url = NOTIFIER_SERVICE
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windowEnd = nowSec + REPEAT_WINDOW_SEC
+
+  // The docs (device-app-api/newAPI/alarm/set) settle the field names:
+  //   url        required, "file path to wake up Mini Program, supporting App Service"
+  //   time       UTC seconds, higher priority than delay; one of time/delay required
+  //   delay      seconds from now; one of time/delay required
+  //   repeat_period / repeat_duration
+  //              "a period of the current repeat_type, containing repeat_period
+  //              times, repeat_duration times before the reminder" - i.e.
+  //              repeat_duration is reminders PER PERIOD (default 1), so 1440
+  //              asks for 1440 reminders inside a one-minute period, which the OS
+  //              drops silently. That is the 1440 measurement explained.
+  //   start_time / end_time
+  //              "the repeat reminder only takes effect during the repeat time
+  //              period" - never set by us, which is why a repeat alarm fired
+  //              once from `delay` and then never again.
+  // HARD LIMIT: one reminder per period, always.
+  //
+  // `repeat_duration` means "reminders inside one period", and with
+  // REPEAT_MINUTE that makes 1440 a *legal* request for 1440 wakes per minute.
+  // The OS will not reject it, and it is the shape that wedged a watch badly
+  // enough to need a factory reset (each wake writes flash via devlog). Nothing
+  // here may express more than one wake per period, so a future edit cannot
+  // reintroduce that class of storm by changing a constant.
+  const repeat = {
+    repeat_type: repeatMinuteValue(),
+    repeat_period: 1,
+    repeat_duration: 1,
+    start_time: nowSec,
+    end_time: windowEnd,
+  }
+
+  const attempts =
+    mode === MODE_REPEAT
+      ? [
+          // Everything the docs describe, in one option: delay for the first
+          // fire, one reminder per one-minute period, explicit repeat window.
+          ['url+window', Object.assign({ url, param, store: STORE, delay: delaySec }, repeat)],
+          // `time` instead of `delay`, since time has priority and some builds
+          // only honour it.
+          ['url+time+window', Object.assign({ url, param, store: STORE, time: nowSec + delaySec }, repeat)],
+          // Window but no store, in case persistence is what is rejected.
+          ['url+window-nostore', Object.assign({ url, param, delay: delaySec }, repeat)],
+          // The shape that reliably fired once: no window.
+          ['url', { url, param, repeat_type: repeatMinuteValue(), repeat_period: 1, repeat_duration: 1, store: STORE, delay: delaySec }],
+          // Bare minimum, no param: fires but the tick cannot tell it was woken.
+          ['url-noparam', { url, store: STORE, delay: delaySec }],
+        ]
+      : [
+          ['url-delay', { url, param, store: STORE, delay: delaySec }],
+          ['url-time', { url, param, store: STORE, time: nowSec + delaySec }],
+          ['url-delay-noparam', { url, store: STORE, delay: delaySec }],
+        ]
+
+  const errs = []
+  for (const [shape, alarm] of attempts) {
+    const result = trySet(alarm)
+    if (result.ok) {
+      rememberId(result.id)
+      const pending = pendingIds()
+      return {
+        ok: true,
+        id: result.id,
+        shape,
+        mode,
+        show,
+        date: nowSec + delaySec,
+        pending: pending.indexOf(Number(result.id)) >= 0,
+        total: pending.length,
+        errs,
+      }
+    }
+    errs.push(shape + ':' + result.err)
+  }
+  return { ok: false, reason: errs.join(' | ').slice(0, 120), errs, mode, show, date: nowSec + delaySec }
+}
+
+// FORCE a fresh alarm: cancel everything we own, then set exactly one.
+//
+// 0.4.17 deduped here and that was a trap: a *pending but spent* alarm (fired
+// once with repeat_duration 1) still counts as "already armed", so pressing Arm
+// again armed nothing and the watch stayed silent. Dedupe is only correct for
+// the automatic path (app launch); a user pressing Arm means "make it work now".
+export function forceTickAlarm(options) {
+  cancelAllTickAlarms()
+  const result = setTickAlarm(options)
+  result.count = result.ok ? 1 : 0
+  result.forced = true
+  return result
+}
+
+// Repeat mode: idempotent, based on our registry intersected with what the OS
+// still lists. Oneshot: nothing to dedupe against - a fired ONCE alarm is
+// consumed - so the chain cancels its own previous id.
+export function ensureTickAlarm(options) {
+  if ((options && options.mode) !== MODE_ONESHOT) {
+    return {
+      ok: false,
+      reason: 'repeat fenced off: use oneshot (see docs/status.md 0.8.x)',
+      mode: MODE_REPEAT,
+      fenced: true,
+    }
+  }
+  const mode = MODE_ONESHOT
+  if (false) {
+    const live = armedIds()
+    if (live.length) {
+      return { ok: true, already: true, count: live.length, id: live[0], mode, dedupe: 'registry' }
+    }
+    // The registry is per-context storage, so the PAGE always sees it empty even
+    // when the service has armed alarms. Treat the OS list as truth: sweep and
+    // set one, instead of adding another on every app launch.
+    if (pendingIds().length) cancelAllTickAlarms()
+  } else {
+    cancelStored()
+  }
+  const result = setTickAlarm(options)
+  result.count = result.ok ? 1 : 0
+  result.dedupe = 'registry'
+  return result
+}
+
+// The tick's own re-arm, called at the top of every wake.
+//
+// It cancels every alarm we created and then arms exactly one, so the cadence
+// does not depend on repeat semantics at all: whether the OS honours
+// repeat_period or treats the alarm as one-shot, the next wake is always
+// scheduled 60 s out and there is never more than one alarm registered. That
+// also makes the chain self-healing after a reboot, a missed wake or a reinstall.
+export function armNext(show, delaySec) {
+  // Fenced off with repeat mode (decision 2026-11-05). The oneshot chain uses
+  // armNextOneshot; this is kept so a stale caller fails loudly, not silently.
+  return {
+    ok: false,
+    skipped: 'repeat fenced off',
+    id: -1,
+    shape: 'fenced',
+    pending: pendingIds(),
+  };
+  // Refuse to stack beyond 3. Refusing at >0 would break the chain: the alarm
+  // being fired is often still listed as pending during its own wake, so "one is
+  // pending" is the normal, healthy state. Growth is bounded instead by the
+  // storm guard in the service (>3 -> cancel all + disarm), which also fires if
+  // the OS stops consuming alarms.
+  const pending = pendingIds()
+  if (pending.length >= 3) {
+    return { ok: false, skipped: 'too many pending', id: -1, shape: 'skipped', pending }
+  }
+  // Deliberately does NOT cancel anything first.
+  //
+  // 0.4.18/0.4.19 cancelled every alarm we owned at the top of a wake - which
+  // includes the alarm that is *currently firing*. A cancelled alarm mid-fire is a
+  // good way to wedge the scheduler, and it is the one difference between this
+  // chain and 0.1.4's (which only ever cancelled the previous id, from inside a
+  // service, and fired repeatedly for hours).
+  //
+  // Each wake arms exactly one new alarm; the one it woke from is consumed by the
+  // OS (repeat_duration 1), so the table does not grow in normal operation.
+  return setTickAlarm({ mode: MODE_REPEAT, show, delaySec: delaySec || 60 })
+}
+
+// Kept for callers that want a single explicit wake.
+export function armNextOneshot(show, delaySec) {
+  cancelStored()
+  // Steady-state cadence, not the 30 s first-wake proof delay: the tick re-arms
+  // itself this far out on every wake.
+  return setTickAlarm({ mode: MODE_ONESHOT, show, delaySec: delaySec || readCadence() })
+}
+
+// --- diagnostics ------------------------------------------------------------
+
+export function alarmDump() {
+  const pending = pendingIds()
+  let json = ''
+  try {
+    json = JSON.stringify(pending)
+  } catch (e) {
+    json = 'unstringable'
+  }
+  return { count: pending.length, json, ours: readIds() }
+}
+
+export function alarmSummary() {
+  return {
+    count: armedIds().length,
+    pending: pendingIds(),
+    ours: readIds(),
+  }
+}
+
+export function alarmDiag() {
+  const has = (name) => {
+    try {
+      return typeof alarmMgr[name] === 'function' ? 'fn' : 'no'
+    } catch (e) {
+      return 'err'
+    }
+  }
+  return {
+    set: has('set'),
+    list: has('getAllAlarms'),
+    cancel: has('cancel'),
+    once: onceValue(),
+    rm: repeatMinuteValue(),
+    pending: pendingIds(),
+    ours: readIds(),
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+server/log/
+.pi/
+*.zab
+secrets/*
+!secrets/*.example

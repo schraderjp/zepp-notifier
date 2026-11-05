@@ -1,0 +1,45 @@
+name: zepp-notifier
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: zepp-notify-relay:1.0
+    command: ["--host", "0.0.0.0", "--port", "8097",
+              "--state", "/data/state.json", "--log", "/data/events.jsonl"]
+    # Option A (preferred): token as a file. Create ./secrets/relay_token
+    # (chmod 600) or inject it from Dockhand; it lands at /run/secrets/relay_token.
+    environment:
+      - RELAY_TOKEN_FILE=/run/secrets/relay_token
+    secrets:
+      - relay_token
+    volumes:
+      # The volume IS the delivery contract once key/answers ship: it holds the
+      # queue, the idempotency fingerprints, the app registry and the fact log.
+      # Empty it and a sender retry becomes a duplicate. Back it up.
+      - relay-data:/data
+    ports:
+      # Loopback only; TLS terminates at the reverse proxy, which forwards
+      # Authorization through. See docs/hosting.md.
+      - "127.0.0.1:${RELAY_PORT:-8097}:8097"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8097/health', timeout=3).status == 200 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+    # Option B (Dockhand variable instead of a file): comment out `secrets:` above
+    # and replace `environment:` with:
+    #   environment:
+    #     - RELAY_TOKEN=${RELAY_TOKEN}
+    # A mounted file is stricter (invisible to `docker inspect` and /proc);
+    # a variable is simpler. Either is defensible on a homelab.
+
+secrets:
+  relay_token:
+    file: ./secrets/relay_token
+
+volumes:
+  relay-data:
