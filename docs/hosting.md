@@ -58,6 +58,15 @@ reads only its own facts; overlapping prefixes are refused, revoking is one clic
 (`DELETE /v1/apps/<id>`), and nothing restarts. The API equivalents are
 `GET/POST /v1/apps` (operator).
 
+### Dashboard login
+
+Set `DASHBOARD_USER` and `DASHBOARD_PASS` (compose passes both through; either works
+from Dockhand variables or `.env`). The browser pops its native login dialog once and
+remembers it per session — no more typing the bearer token to view the dashboard. The
+API is untouched: senders, apps and the watch keep using bearer tokens, `/health` and
+`/docs` stay open, and half-configuring (user without password) refuses to start
+rather than running half-locked.
+
 ### The watch also needs the token
 
 Not a server setting: the Side Service sends the token it reads from the phone-side app

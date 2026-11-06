@@ -429,6 +429,48 @@ def main():
     finally:
         d.stop()
 
+    # ---------------- dashboard login ----------------
+    print("\ndashboard auth")
+    import base64 as _b64
+    naked = Relay()
+    try:
+        import urllib.request as _u2
+        with _u2.urlopen(naked.url("/"), timeout=40) as r:
+            html = r.read().decode("utf-8", "replace")
+            stn = r.status
+        check("no dashboard user: dashboard open", stn == 200 and "spike relay" in html, f"{stn}")
+    finally:
+        naked.stop()
+    locked = Relay({"DASHBOARD_USER": "op", "DASHBOARD_PASS": "s3cret", "RELAY_TOKEN": "opaque"})
+    try:
+        st, _, _ = locked.get("/")
+        check("dashboard login required", st == 401, f"{st}")
+        st, _, headers = locked.get("/state")
+        check("state behind the same login", st == 401, f"{st}")
+        good = "Basic " + _b64.b64encode(b"op:s3cret").decode()
+        st, _, _ = locked.get("/", token=None)
+        import urllib.request as _u
+        for path, want in (("/", 200), ("/state", 200), ("/health", 200), ("/docs", 200)):
+            req = _u.Request(locked.url(path), headers={"Authorization": good})
+            with _u.urlopen(req, timeout=40) as r:
+                got = r.status
+            check(f"dashboard login opens {path}", got == want, f"{got}")
+        bad = "Basic " + _b64.b64encode(b"op:wrong").decode()
+        req = _u.Request(locked.url("/"), headers={"Authorization": bad})
+        try:
+            with _u.urlopen(req, timeout=40) as r:
+                gotb = r.status
+        except _u.HTTPError as e:
+            gotb = e.code
+        check("wrong dashboard password stays out", gotb == 401, f"{gotb}")
+        st, health, _ = locked.get("/health")
+        check("health needs no login", st == 200 and health.get("ok") is True, f"{st}")
+        st, _, _ = locked.get("/v1/notify", token=None) if False else (None, None, None)
+        st, res, _ = locked.post("/v1/notify", {"title": "t"})
+        check("API still bearer-gated without bearer", st == 401, f"{st} {res}")
+    finally:
+        locked.stop()
+
     # ---------------- queue cap on its own instance ----------------
     print("\nqueue cap")
     tight = Relay({"QUEUE_MAX": "1"})

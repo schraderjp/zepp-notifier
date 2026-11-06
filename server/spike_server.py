@@ -56,6 +56,12 @@ LAST_STUCK_AT = 0
 LOG_PATH = ""
 STATE_PATH = ""
 TOKEN = ""
+# Dashboard login (human UX): DASHBOARD_USER + DASHBOARD_PASS in env. When set, the
+# browser-native login dialog replaces typing the bearer token to view the dashboard
+# and /state, and the browser remembers it per session. API endpoints (/v1/*) keep
+# using bearer tokens — this changes nothing for senders, apps, or the watch.
+DASHBOARD_USER = ""
+DASHBOARD_PASS = ""
 # Human + machine API docs served by the relay itself (GET /docs...). Resolves to the
 # repo's docs/ in dev and to the files baked into the image in Docker.
 DOCS_DIR = ""
@@ -890,6 +896,34 @@ class Handler(BaseHTTPRequestHandler):
         headers = {"Retry-After": "60"} if exc.status == 429 else None
         self._send(exc.status, payload, extra_headers=headers)
 
+    def _dashboard_ok(self) -> bool:
+        """Human login for / and /state. Open when no dashboard user is configured."""
+        if not DASHBOARD_USER:
+            return True
+        import base64 as _b64
+        import hmac as _hm
+
+        header = (self.headers.get("Authorization") or "").strip()
+        if not header.startswith("Basic "):
+            return False
+        try:
+            decoded = _b64.b64decode(header[6:].strip()).decode("utf-8")
+        except Exception:
+            return False
+        return _hm.compare_digest(decoded, DASHBOARD_USER + ":" + DASHBOARD_PASS)
+
+    def _require_dashboard(self) -> bool:
+        if self._dashboard_ok():
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="relay"')
+        self.send_header("Content-Type", "application/json")
+        body = json.dumps({"error": "dashboard login required"}).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def _authorized(self) -> bool:
         role, _ = auth_role(self.headers.get("Authorization") or "")
         return role in ("open", "operator", "app")
@@ -961,7 +995,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_docs_page()
         if parsed.path == "/docs/index.json" or parsed.path.startswith("/docs/"):
             return self._serve_docs(parsed.path.rsplit("/", 1)[-1])
-        if parsed.path not in ("/health", "/"):
+        if parsed.path not in ("/health", "/") and not (
+            parsed.path == "/state" and self._dashboard_ok()
+        ):
+            # /state accepts either the operator bearer token (dashboard JS, apps
+            # API) or the dashboard login; the branch itself re-checks.
             role, _app = self._auth()
             if role == "none":
                 return self._send(401, {"error": "unauthorized"})
@@ -1033,6 +1071,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, payload)
 
         if parsed.path == "/state":
+            role_state, _ = self._auth()
+            if role_state == "app":
+                return self._send(403, {"error": {"code": "forbidden", "message": "operator only"}})
+            # Either credential works: the operator bearer token (dashboard JS,
+            # apps API) or the dashboard login (browser dialog). App tokens stay
+            # out; /state carries notification bodies and answers.
+            if role_state == "none" and not self._require_dashboard():
+                return None
             with STATE_LOCK:
                 recent = EVENTS[-60:]
             return self._send(
@@ -1045,6 +1091,8 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         if parsed.path == "/":
+            if not self._require_dashboard():
+                return None
             return self._send(200, DASHBOARD_HTML, "text/html; charset=utf-8")
         return self._send(404, {"error": "not found"})
 
@@ -1325,6 +1373,12 @@ def main() -> None:
     global DOCS_DIR
     here = os.path.dirname(os.path.abspath(__file__))
     DOCS_DIR = os.path.join(here, "docs") if os.path.isdir(os.path.join(here, "docs")) else os.path.join(os.path.dirname(here), "docs")
+    global DASHBOARD_USER, DASHBOARD_PASS
+    DASHBOARD_USER = (os.environ.get("DASHBOARD_USER") or "").strip()
+    DASHBOARD_PASS = (os.environ.get("DASHBOARD_PASS") or "").strip()
+    if bool(DASHBOARD_USER) != bool(DASHBOARD_PASS):
+        print("relay: set both DASHBOARD_USER and DASHBOARD_PASS, or neither")
+        raise SystemExit(2)
     TOKEN = (args.token or "").strip()
     if not TOKEN and args.token_file:
         try:
@@ -1340,6 +1394,10 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print("spike relay on http://%s:%d  (events -> %s)" % (args.host, args.port, LOG_PATH))
     print("auth:", ("bearer token required (%d chars)" % len(TOKEN)) if TOKEN else "DISABLED - no token configured")
+    print(
+        "dashboard auth:",
+        ("HTTP Basic as %r (browser remembers it)" % DASHBOARD_USER) if DASHBOARD_USER else "disabled - dashboard is open",
+    )
     if not TOKEN and args.host not in ("127.0.0.1", "localhost", "::1"):
         print(
             "relay: WARNING: bound to %s with no token, so anyone who can reach this port\n"

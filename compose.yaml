@@ -14,6 +14,10 @@ services:
     # (an unreadable token file is fatal, by design).
     environment:
       - RELAY_TOKEN=${RELAY_TOKEN}
+      # Dashboard login (browser remembers it per session; API tokens unaffected).
+      # Leave unset for an open dashboard.
+      - DASHBOARD_USER=${DASHBOARD_USER:-}
+      - DASHBOARD_PASS=${DASHBOARD_PASS:-}
     volumes:
       # /data IS the delivery contract: queue, idempotency fingerprints, app
       # registry, fact log. Host-path bind, must be set, e.g.
