@@ -8,17 +8,23 @@ services:
     image: zepp-notify-relay:1.0
     command: ["--host", "0.0.0.0", "--port", "8097",
               "--state", "/data/state.json", "--log", "/data/events.jsonl"]
-    # Option A (preferred): token as a file. Create ./secrets/relay_token
-    # (chmod 600) or inject it from Dockhand; it lands at /run/secrets/relay_token.
+    # Token as a plain variable (simplest with Dockhand). The secrets-file
+    # alternative still works — see docs/hosting.md — but pick one: an env
+    # value here plus a missing secret file would crash the relay at startup
+    # (an unreadable token file is fatal, by design).
     environment:
-      - RELAY_TOKEN_FILE=/run/secrets/relay_token
-    secrets:
-      - relay_token
+      - RELAY_TOKEN=${RELAY_TOKEN}
     volumes:
-      # The volume IS the delivery contract once key/answers ship: it holds the
-      # queue, the idempotency fingerprints, the app registry and the fact log.
+      # /data IS the delivery contract: queue, idempotency fingerprints, app
+      # registry, fact log. Host-path bind, must be set, e.g.
+      # /opt/docker/zepp-relay. Must be writable by uid 65534 (the image runs
+      # as nobody): chown 65534:65534 or equivalent. :z relabels for SELinux.
       # Empty it and a sender retry becomes a duplicate. Back it up.
-      - relay-data:/data
+      - type: bind
+        source: ${HOST_DATA_DIR}
+        target: /data
+        bind:
+          create_host_path: true
     ports:
       # Loopback only; TLS terminates at the reverse proxy, which forwards
       # Authorization through. See docs/hosting.md. (Harmless to keep alongside
@@ -33,22 +39,8 @@ services:
       timeout: 5s
       retries: 3
 
-    # Option B (Dockhand variable instead of a file): comment out `secrets:` above
-    # and replace `environment:` with:
-    #   environment:
-    #     - RELAY_TOKEN=${RELAY_TOKEN}
-    # A mounted file is stricter (invisible to `docker inspect` and /proc);
-    # a variable is simpler. Either is defensible on a homelab.
 
-secrets:
-  relay_token:
-    file: ./secrets/relay_token
-
-volumes:
-  # Actual docker volume name, so it stays stable no matter what the stack gets
-  # called in Dockhand (defaults used to be prefixed with the project name).
-  relay-data:
-    name: ${RELAY_DATA_VOLUME:-zepp-notifier_relay-data}
+# (No top-level volumes: /data is a host-path bind, configured above.)
 
 networks:
   # Your existing internal network (the one the reverse proxy is on), by name:

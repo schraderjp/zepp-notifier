@@ -86,30 +86,21 @@ Two environment notes that cost real debugging time:
   a `:z` bind on a single-user box; real Docker secrets mount `0444` and need no
   thought.
 
-### Migrating the queue
+### Data lives at HOST_DATA_DIR
 
-The dev instance's queue, answers, app registry and fact cursor live in
-`server/log/state.json` (gitignored). Copy it into the named volume once, before the
-first container start:
+`/data` is a host-path bind (`HOST_DATA_DIR`, e.g. `/opt/docker/zepp-relay`): queue,
+answers, app registry, fact log. The directory is created automatically; it must be
+writable by uid 65534 (the image runs as `nobody`) — `chown 65534:65534
+/path/to/dir` or equivalent. First start self-seeds an empty state, so a fresh deploy
+needs nothing; to carry over an existing queue, copy your `state.json` into the
+directory before the first start (only worth it for real undelivered items — the dev
+copy holds test notifications that would re-render on the watch).
 
-```sh
-docker volume create zepp-notifier_relay-data   # unless RELAY_DATA_VOLUME says otherwise
-docker run --rm -v zepp-notifier_relay-data:/data -v "$PWD/server/log:/src:ro,z"   busybox cp /src/state.json /data/state.json
-```
-
-After that the volume is the source of truth; the `server/log/` copy is dev history.
-
-If Dockhand would rather inject a variable than mount a file, drop `secrets:` and use:
-
-```yaml
-    environment:
-      - RELAY_TOKEN=${RELAY_TOKEN}     # value from Dockhand or a local .env
-```
-
-Both work. The difference is where the secret ends up: an environment variable is visible
-to anything that can read the process (`docker inspect`, `/proc/1/environ`), a mounted
-file is not. Environment is simpler; the file is stricter. For a homelab either is
-defensible — prefer the file if Dockhand supports it.
+Token mechanism: plain `RELAY_TOKEN` variable, matching a Dockhand-managed setup. A
+secrets file is stricter (invisible to `docker inspect` and `/proc/1/environ`) and the
+relay still supports it (`RELAY_TOKEN_FILE` / `--token-file`) — but pick one. An env
+value here plus a `secrets:` entry pointing at a file you never created crashes the
+relay at startup, because an unreadable token file is treated as fatal, by design.
 
 ### The volume is part of the contract, not just storage
 
