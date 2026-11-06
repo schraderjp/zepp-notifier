@@ -313,6 +313,24 @@ from the dashboard, baked into the image via `COPY docs`. Verified in a token-lo
 container and on the live relay; traversal returns 401/404, never a file. Contract
 tests grew to 88 assertions.
 
+## Watch 0.9.1 — page simplified, MIT licensed
+
+Built as `dist/10262217-Notify_Relay-0.9.1-20261105190313.zab` (code 68).
+`npm run verify` clean. **Not yet installed.**
+
+The page was still a lab bench: 7 buttons including a tick-proof arm, an alarm
+diagnostic that buzzed the wrist, and a load test labelled "wedges". Now 4:
+
+* **Arm notifications** (oneshot 30 s, silent) — the only way to arm
+* **Cadence: Ns (tap: change)** — 60 → 30 → 20 → 60
+* **Disarm** — the kill switch, unchanged
+* **Device log >** — read-only diagnostics, the only window into the watch
+
+Status line speaks plainly: `Armed · every 20s` / `Disarmed`, plus a second line
+only when something needs attention (permission missing, or an armed chain with
+no alarm pending). Removed: tick-proof arm (chain long since proven), `diag()`,
+`startTick()` + its import. `LICENSE` is MIT.
+
 ## Next work, agreed earlier and still open
 
 1. `docs/contract.md` and the sender API: `key` (replace + idempotency), `tag`

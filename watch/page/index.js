@@ -30,7 +30,6 @@ import {
   alarmDump,
   pendingIds,
   isArmed,
-  NOTIFIER_SERVICE,
   MODE_ONESHOT,
   readCadence,
   cycleCadence,
@@ -39,7 +38,6 @@ import {
   BG_PERMISSION,
   ALARM_PERMISSION,
   ensureBgPermission,
-  startTickOnce,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 
@@ -111,17 +109,14 @@ Page({
     // `show=1` (the per-minute "Tick ..." proof notification) is a diagnostic and
     // gets exactly one button, because the chain inherits whatever the first wake
     // carried - arming loudly makes every subsequent wake loud too.
-    button(140, 'Arm 30s  (silent)', () => this.arm(MODE_ONESHOT, 30), 0x1c5c34)
-    button(172, 'Arm 30s  + tick proof', () => this.arm(MODE_ONESHOT, 30, true))
-    this.cadenceBtn = button(204, 'Cadence: ...', () => this.cycleCadence(), 0x3d3d3d)
-    button(236, 'Diag > notify+log', () => this.diag(), 0x3d3d3d)
-    button(268, 'Disarm (sweep)', () => this.disarm())
-    button(300, 'Load test (wedges)', () => this.startTick(), 0x6b4a12)
-    button(332, 'Device log  >', () => push({ url: 'page/log' }))
+    button(140, 'Arm notifications', () => this.arm(MODE_ONESHOT, 30), 0x1c5c34)
+    this.cadenceBtn = button(172, 'Cadence: ...', () => this.cycleCadence(), 0x3d3d3d)
+    button(204, 'Disarm', () => this.disarm())
+    button(236, 'Device log  >', () => push({ url: 'page/log' }), 0x3d3d3d)
 
     this.summary = ui.createWidget(ui.widget.TEXT, {
       x: MARGIN,
-      y: 366,
+      y: 272,
       w: CONTENT_W,
       h: 80,
       text: '',
@@ -156,10 +151,16 @@ Page({
     try {
       if (this.cadenceBtn) this.cadenceBtn.setProperty(ui.prop.TEXT, 'Cadence: ' + cadence + 's (tap: change)')
     } catch (e) {}
+    const armed = isArmed()
+    const pending = alarm.pending || []
     const lines = [
-      (isArmed() ? 'Armed' : 'Disarmed') + '   ours: ' + alarm.count + '   ' + permText,
-      'pending: ' + JSON.stringify(alarm.pending || []) + '  every ' + cadence + 's',
+      (armed ? 'Armed' : 'Disarmed') + '  ·  every ' + cadence + 's',
     ]
+    if (permText !== 'perm ok') {
+      lines.push(permText + ' — grant permission, then re-arm')
+    } else if (armed && pending.length !== 1) {
+      lines.push('alarm: ' + (pending.length === 0 ? 'none pending — re-arm' : 'pending ' + JSON.stringify(pending)))
+    }
     this.status.setProperty(ui.prop.TEXT, lines.join('\n'))
 
     let count = 0
@@ -237,13 +238,11 @@ Page({
     armNotifier((result) => {
       logger.log('arm', JSON.stringify(result))
       appendDevLog('arm ' + JSON.stringify(result))
-      const verdict = result.ok ? 'ok ' + (result.shape || '') : 'FAIL'
-      const detail =
-        'id=' + (result.id !== undefined ? result.id : '-') +
-        ' pend=' + (result.pending ? 'yes' : 'no') + '/' + (result.total || 0) +
-        ' ' + mode + '/' + delaySec + 's' +
-        (result.ok ? '' : ' ' + String(result.reason || '').slice(0, 70))
-      this.hint.setProperty(ui.prop.TEXT, 'arm: ' + verdict + ' ' + detail.slice(0, 44))
+      const verdict = result.ok ? 'Armed — first check in ~30s' : 'FAILED'
+      const detail = result.ok
+        ? ''
+        : ' ' + String(result.reason || result.skipped || '').slice(0, 60)
+      this.hint.setProperty(ui.prop.TEXT, ('arm: ' + verdict + detail).slice(0, 46))
       // Notifications, not the hint: this is the only stage that has been
       // invisible for a dozen builds, and it has to be readable on the watch.
       try {
@@ -299,29 +298,6 @@ Page({
     }
   },
 
-  // Renders the alarm API surface as a notification: no BLE, no service, no
-  // alarm needed. Requests the permission first if it was never granted, so
-  // `bg=` is always meaningful here rather than reflecting "never asked".
-  diag() {
-    const show = () => {
-      const d = alarmDiag()
-      const body =
-        'set=' + d.set + ' list=' + d.list + ' get=' + d.get +
-        ' rm=' + d.rm + ' once=' + d.once +
-        ' bg=' + permissionState(BG_PERMISSION) + ' al=' + alarmPermissionState() +
-        ' pend=' + JSON.stringify(d.pending) + ' ours=' + JSON.stringify(d.ours)
-      try {
-        notify({ title: 'Alarm diag', content: body.slice(0, 160), actions: [], vibrate: 2 })
-      } catch (e) {}
-      appendDevLog('diag ' + body)
-      this.dumpAlarms(true)
-      this.hint.setProperty(ui.prop.TEXT, 'diag: ' + body.slice(0, 60))
-      this.refresh()
-    }
-    if (permissionState(BG_PERMISSION) === 2 && alarmPermissionState() === 2) return show()
-    ensureBgPermission(show)
-  },
-
   // Stop everything. This method was MISSING: the button called this.disarm(),
   // which threw, so the alarm table could not be cleared from the UI and the
   // status header never changed. (undef-check validates identifiers, not
@@ -335,16 +311,5 @@ Page({
       'disarm: cancelled=' + (result.cancelled || 0) + ' swept=' + (result.swept || 0) + ' pending=' + pending,
     )
     this.refresh()
-  },
-
-  // Start the service by hand once. Diagnostics only: a start()-ed instance is
-  // CONTINUOUS, and one that never exits occupies the single App Service slot -
-  // hence the "wedges" label on the button.
-  startTick() {
-    startTickOnce('via=manual&mode=oneshot', (result) => {
-      appendDevLog('startTick ' + JSON.stringify(result))
-      this.hint.setProperty(ui.prop.TEXT, 'start: ' + JSON.stringify(result).slice(0, 46))
-      this.refresh()
-    })
   },
 })
