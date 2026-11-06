@@ -208,13 +208,14 @@ expired-with-retract. Cancellation happens on the **next wake** (≤ ~60 s), and
 `cancel()` on an id the user already dismissed is a no-op, so the list repeats until the
 device confirms via `seen.cancelled`.
 
-**Limitation, stated plainly:** expiry cannot remove a notification that already
-reached the watch. The relay has no push channel, and the watch's notification centre
-is a local object. An item rendered at 06:58 and expired at 07:30 will still be sitting
-there at 11:00 asking for a tap. Retracting it needs a device build (the poll response
-would carry `cancel: [ids]`, the watch would map relay ids to notification-centre ids
-and call `cancel()`), and that mapping must survive a service-context restart. I
-recommend deferring it to v2 and documenting the limitation now.
+**What expiry alone cannot do:** without `retract: true`, an item rendered at 06:58
+and expired at 07:30 is still sitting there at 11:00 asking for a tap — the relay has
+no push channel, and the centre is a local object. With `retract: true` (and a 0.6.0+
+device, which reports centre ids), the expired item joins the next wake's `cancel`
+list instead. Either way this is the sender's choice per notification, not a
+relay-wide policy — and because a stale prompt gets cancelled within a wake, the
+window in which a late tap can log an answer against outdated content is bounded by
+the cadence, not open-ended.
 
 ### 5.3b `not_before` — do not serve before
 
@@ -296,10 +297,9 @@ anyway, escalate, or hold.
 | 400 | invalid field; `field` names it |
 | 401 | missing/wrong bearer token |
 | 404 | unknown notification id |
-| 409 | `since` cursor older than retained facts, response carries `oldest_seq` |
 | 200 | `duplicate: true` (identical retry) or `replaced: true` (in-place replacement) — nothing new was created |
 | 201 | a newly queued item |
-| 409 | `since` older than retained facts (`cursor_too_old`, carries `oldest_seq`) |
+| 409 | `since` cursor older than retained facts (`cursor_too_old`, response carries `oldest_seq`) |
 | 429 | queue depth exceeded, with a `Retry-After` header |
 | 500 | relay fault; safe to retry the same request (idempotency per 5.1) |
 
