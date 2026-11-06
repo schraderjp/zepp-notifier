@@ -129,8 +129,9 @@ they cannot send. Options, cheapest first:
 * a reverse proxy with real TLS (below), keeping the relay on loopback.
 
 ```caddy
+# Proxy in Docker on the same internal network (see INTERNAL_NETWORK):
 relay.example.lan {
-    reverse_proxy 127.0.0.1:8097
+    reverse_proxy relay:8097
 }
 ```
 
@@ -143,7 +144,9 @@ location / {
 ```
 
 Then point the watch's phone-side relay URL at `https://relay.example.lan` and set the
-same token in the app settings.
+same token in the app settings. In Dockhand this is all it takes: set
+`INTERNAL_NETWORK` to the proxy's network (or leave it unset), create the
+`relay_token` secret, up — no post-pull edits, the compose file stays canonical.
 
 ## Notes
 

@@ -21,8 +21,11 @@ services:
       - relay-data:/data
     ports:
       # Loopback only; TLS terminates at the reverse proxy, which forwards
-      # Authorization through. See docs/hosting.md.
+      # Authorization through. See docs/hosting.md. (Harmless to keep alongside
+      # the internal network; drop it if the proxy reaches the relay by name.)
       - "127.0.0.1:${RELAY_PORT:-8097}:8097"
+    networks:
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8097/health', timeout=3).status == 200 else 1)"]
@@ -43,3 +46,12 @@ secrets:
 
 volumes:
   relay-data:
+
+networks:
+  # Your existing internal network (the one the reverse proxy is on), by name:
+  #   INTERNAL_NETWORK=homelab-net
+  # Unset it and the relay just uses the default bridge. The proxy then reaches
+  # the relay as http://relay:8097 from inside this network.
+  internal:
+    name: ${INTERNAL_NETWORK:-bridge}
+    external: true
