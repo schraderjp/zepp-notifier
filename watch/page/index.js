@@ -59,18 +59,18 @@ Page({
       w: CONTENT_W,
       h: 24,
       text: 'watch->phone: checking...',
-      text_size: 19,
+      text_size: 20,
       color: 0x9aa4ad,
       align_h: ui.align.LEFT,
     })
 
     this.status = ui.createWidget(ui.widget.TEXT, {
       x: MARGIN,
-      y: 68,
+      y: 66,
       w: CONTENT_W,
-      h: 56,
+      h: 64,
       text: '',
-      text_size: 15,
+      text_size: 20,
       color: 0xffffff,
       text_style: ui.text_style.WRAP,
       align_h: ui.align.LEFT,
@@ -78,11 +78,11 @@ Page({
 
     this.hint = ui.createWidget(ui.widget.TEXT, {
       x: MARGIN,
-      y: 122,
+      y: 134,
       w: CONTENT_W,
-      h: 22,
+      h: 28,
       text: '',
-      text_size: 14,
+      text_size: 17,
       color: 0xffcc66,
       text_style: ui.text_style.WRAP,
     })
@@ -92,10 +92,10 @@ Page({
         x: MARGIN,
         y,
         w: CONTENT_W,
-        h: 28,
-        radius: 8,
+        h: 44,
+        radius: 10,
         text,
-        text_size: 15,
+        text_size: 19,
         normal_color: color || 0x245884,
         press_color: 0x387eac,
         color: 0xffffff,
@@ -109,18 +109,18 @@ Page({
     // `show=1` (the per-minute "Tick ..." proof notification) is a diagnostic and
     // gets exactly one button, because the chain inherits whatever the first wake
     // carried - arming loudly makes every subsequent wake loud too.
-    button(140, 'Arm notifications', () => this.arm(MODE_ONESHOT, 30), 0x1c5c34)
-    this.cadenceBtn = button(172, 'Cadence: ...', () => this.cycleCadence(), 0x3d3d3d)
-    button(204, 'Disarm', () => this.disarm())
-    button(236, 'Device log  >', () => push({ url: 'page/log' }), 0x3d3d3d)
+    button(166, 'Arm notifications', () => this.arm(MODE_ONESHOT, 30), 0x1c5c34)
+    this.cadenceBtn = button(222, 'Cadence: ...', () => this.cycleCadence(), 0x3d3d3d)
+    button(278, 'Disarm', () => this.disarm())
+    button(334, 'Device log  >', () => push({ url: 'page/log' }), 0x3d3d3d)
 
     this.summary = ui.createWidget(ui.widget.TEXT, {
       x: MARGIN,
-      y: 272,
+      y: 384,
       w: CONTENT_W,
-      h: 80,
+      h: 56,
       text: '',
-      text_size: 12,
+      text_size: 14,
       color: 0x8fd6a0,
       text_style: ui.text_style.WRAP,
       align_h: ui.align.LEFT,
