@@ -93,7 +93,7 @@ The dev instance's queue, answers, app registry and fact cursor live in
 first container start:
 
 ```sh
-docker volume create zepp-notifier_relay-data   # name varies by project; check `docker volume ls`
+docker volume create zepp-notifier_relay-data   # unless RELAY_DATA_VOLUME says otherwise
 docker run --rm -v zepp-notifier_relay-data:/data -v "$PWD/server/log:/src:ro,z"   busybox cp /src/state.json /data/state.json
 ```
 

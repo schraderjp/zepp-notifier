@@ -45,7 +45,10 @@ secrets:
     file: ./secrets/relay_token
 
 volumes:
+  # Actual docker volume name, so it stays stable no matter what the stack gets
+  # called in Dockhand (defaults used to be prefixed with the project name).
   relay-data:
+    name: ${RELAY_DATA_VOLUME:-zepp-notifier_relay-data}
 
 networks:
   # Your existing internal network (the one the reverse proxy is on), by name:
