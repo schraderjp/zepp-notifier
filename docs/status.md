@@ -331,6 +331,13 @@ only when something needs attention (permission missing, or an armed chain with
 no alarm pending). Removed: tick-proof arm (chain long since proven), `diag()`,
 `startTick()` + its import. `LICENSE` is MIT.
 
+## Dashboard login — done
+
+`DASHBOARD_USER`/`DASHBOARD_PASS` in env: browser-native Basic Auth on `/` and
+`/state`, remembered per session, half-configured refuses to start. API untouched
+(bearer everywhere, `/health` + `/docs` open). 98 contract assertions pass, live relay
+restarted with it, compose + `.env.example` carry the vars (empty = open dashboard).
+
 ## Next work, agreed earlier and still open
 
 1. `docs/contract.md` and the sender API: `key` (replace + idempotency), `tag`

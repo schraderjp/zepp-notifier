@@ -168,8 +168,11 @@ The plaintext app token is returned exactly once at creation and never stored â€
 a `sha256` hash and a `token_preview` persist. Lose it and you revoke + recreate.
 With no operator token configured every endpoint is open (dev mode): startup prints
 `auth: DISABLED` plus an exposure warning when bound beyond loopback, and `/health`
-reports `auth: false`. `GET /health` and the static dashboard shell always stay open.
-See `docs/hosting.md`.
+reports `auth: false`. `GET /health`, the dashboard shell and `/docs` always stay
+open. When `DASHBOARD_USER`/`DASHBOARD_PASS` are set, `/` and `/state` additionally
+require the browser-native login (remembered per session); the dashboard's
+bearer-token field remains for the API calls it makes. `/v1/*` always uses bearer
+tokens â€” the dashboard login never substitutes. See `docs/hosting.md`.
 
 ## 5. Semantics
 
