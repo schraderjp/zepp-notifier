@@ -305,6 +305,14 @@ def main():
         st, inbox, _ = c.get("/v1/inbox?device=t")
         check("answered item is put on the cancel list", inbox.get("cancel") == [4242], str(inbox))
 
+        # A duplicate render report (the watch re-sends after a lost response, or a
+        # late report lands) must not demote the terminal state: the cancel list keys
+        # off "answered".
+        st, seen_dup, _ = c.post("/v1/seen", {"ids": [n1["id"]]})
+        st, item, _ = c.get("/v1/notification/%s" % n1["id"])
+        check("duplicate render report keeps state answered", item["state"] == "answered", str(item.get("state")))
+        check("duplicate render report marks nothing new", seen_dup.get("marked") == 0, str(seen_dup))
+
         st, seen2, _ = c.post("/v1/seen", {"ids": [], "cancelled": [4242]})
         check("cancellation is confirmed", seen2.get("cancelled") == 1, str(seen2))
         st, inbox2, _ = c.get("/v1/inbox?device=t")
@@ -323,6 +331,76 @@ def main():
         check("expired non-retract item is not served", all(i["id"] != exp["id"] for i in inbox4["items"]), "")
     finally:
         c.stop()
+
+    # ---------------- answered before rendered -------------
+    # Regression for docs/bug-answered-items-still-deliverable.md. An answer is
+    # terminal for delivery even when no render report ever arrived, which is the
+    # normal case on a device where ~30-40% of reports are lost (contract 5.0).
+    print("\nanswered before rendered")
+    ab = Relay()
+    try:
+        st, n1, _ = ab.post("/v1/notify", {
+            "title": "Answer me first", "body": "b", "tag": "ab.test",
+            "key": "ab:1", "actions": [{"id": "yes", "label": "Yes"}],
+        })
+        ab.get("/v1/inbox?device=t")  # served, then the render report is "lost"
+        ab.post("/v1/ack", {"id": n1["id"], "action": "yes"})
+        st, item, _ = ab.get("/v1/notification/%s" % n1["id"])
+        served_before = int(item.get("served_count") or 0)
+        st, i1, _ = ab.get("/v1/inbox?device=t")
+        st, i2, _ = ab.get("/v1/inbox?device=t")
+        check(
+            "ack-before-render is not re-served",
+            all(i["id"] != n1["id"] for i in i1["items"] + i2["items"]),
+            str(i1["items"]) + str(i2["items"]),
+        )
+        st, item, _ = ab.get("/v1/notification/%s" % n1["id"])
+        check("re-serving did not inflate served_count", int(item.get("served_count") or 0) == served_before, f"was {served_before}, now {item.get('served_count')}")
+        check("item stays answered", item["state"] == "answered", str(item.get("state")))
+        check("no render report was invented", item.get("rendered_at") is None, str(item.get("rendered_at")))
+        st, health, _ = ab.get("/health")
+        check("answered item does not count in queue_depth", health["queue_depth"] == 0, str(health))
+
+        for _ in range(12):
+            ab.get("/v1/inbox?device=t")
+        st, page, _ = ab.get("/v1/events?since=all&kind=abandoned")
+        check("no abandoned fact for an answered item", all(f["id"] != n1["id"] for f in page["facts"]), str(page["facts"]))
+        st, item, _ = ab.get("/v1/notification/%s" % n1["id"])
+        check("12 polls leave it answered", item["state"] == "answered", str(item.get("state")))
+        check("12 polls leave served_count alone", int(item.get("served_count") or 0) == served_before, str(item.get("served_count")))
+
+        # A lost report that arrives after the answer must not un-answer the item:
+        # "answered" is terminal, and the answered notification still has to be
+        # cancelled off the wrist (contract 5.3).
+        st, n2, _ = ab.post("/v1/notify", {"title": "Late report", "body": "b", "tag": "ab.test", "key": "ab:2", "actions": ["yes"]})
+        ab.post("/v1/ack", {"id": n2["id"], "action": "yes"})
+        st, late, _ = ab.post("/v1/seen", {"ids": [n2["id"]], "centre": {n2["id"]: 4242}})
+        check("late render report is still recorded", late.get("marked") == 1, str(late))
+        st, item, _ = ab.get("/v1/notification/%s" % n2["id"])
+        check("late render report does not un-answer", item["state"] == "answered", str(item.get("state")))
+        check("late render report still records rendered_at", item.get("rendered_at") is not None, str(item.get("rendered_at")))
+        st, inbox, _ = ab.get("/v1/inbox?device=t")
+        check("answered item is still cancelled after a late report", 4242 in inbox.get("cancel", []), str(inbox.get("cancel")))
+
+        # An answer also ends the item's life: a TTL that passes later must not relabel
+        # it expired and tell the sender it timed out unanswered.
+        st, n3, _ = ab.post("/v1/notify", {
+            "title": "ttl", "body": "b", "tag": "ab.test", "key": "ab:3",
+            "expires_at": int(time.time() * 1000) + 1200, "actions": ["yes"],
+        })
+        ab.post("/v1/ack", {"id": n3["id"], "action": "yes"})
+        time.sleep(1.4)
+        ab.get("/v1/inbox?device=t")
+        st, item, _ = ab.get("/v1/notification/%s" % n3["id"])
+        check("answering stops the item expiring", item["state"] == "answered", str(item.get("state")))
+        st, page, _ = ab.get("/v1/events?since=all&kind=expired")
+        check("no expired fact after an answer", all(f["id"] != n3["id"] for f in page["facts"]), str(page["facts"]))
+
+        ab.restart()
+        st, inbox, _ = ab.get("/v1/inbox?device=t")
+        check("a restart does not resurrect the answered item", all(i["id"] != n1["id"] for i in inbox["items"]), str(inbox["items"]))
+    finally:
+        ab.stop()
 
     # ---------------- retention and concurrency on their own instances ----------------
     print("\nretention: a cursor older than retained facts")
@@ -475,11 +553,17 @@ def main():
     print("\nqueue cap")
     tight = Relay({"QUEUE_MAX": "1"})
     try:
-        tight.post("/v1/notify", {"title": "one", "body": "1"})
-        tight.post("/v1/notify", {"title": "two", "body": "2"})
-        st, res, headers = tight.post("/v1/notify", {"title": "three", "body": "3"})
+        st, held, _ = tight.post("/v1/notify", {"title": "one", "body": "1"})
+        st, res, headers = tight.post("/v1/notify", {"title": "two", "body": "2"})
         check("queue cap returns 429", st == 429 and res["error"]["code"] == "queue_full", f"{st} {res}")
         check("429 carries Retry-After", "Retry-After" in {k.title(): v for k, v in headers.items()} or "retry-after" in {k.lower() for k in headers}, str(headers))
+        # An answered item must free its slot even with no render report, or a full
+        # queue turns into a deadlock the sender can never clear.
+        tight.post("/v1/ack", {"id": held["id"], "action": "yes"})
+        st, freed, _ = tight.post("/v1/notify", {"title": "after ack", "body": "b"})
+        check("answered item frees its queue slot", st == 201, f"{st} {freed}")
+        st, health, _ = tight.get("/health")
+        check("queue_depth ignores the answered item", health["queue_depth"] == 1, str(health))
     finally:
         tight.stop()
 

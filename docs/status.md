@@ -10,6 +10,18 @@
 Armed silently (silent arm = `show=0`, so no diagnostic notification per wake).
 Side Service instance is fresh from the 09:57 install/arm.
 
+## Relay fix — answered-before-rendered (2026-11-08)
+
+An item answered **before** its render report arrived was served again, counted in
+`queue_depth`, relabelled `expired` when its TTL passed, and finally parked as
+`abandoned`; a late report also demoted `answered` to `rendered`, which dropped it from
+the `cancel` list so the answered notification stayed on the wrist. Root cause: every
+terminal-state check tested for `"acked"`, a value nothing writes. Delivery now keys off
+`answers` plus `TERMINAL_STATES`, in one predicate used by all four sites. Relay-only —
+no watch rebuild, no state migration. `tools/test-contract.py`: **117 passed, 0 failed**
+(98 before; all 11 new assertions were shown failing first). Details:
+`docs/plan-fix-answered-items.md`, contract §5.1/§5.5/§5.6.
+
 ## What 0.5.6 changed (and why)
 
 | change | reason |

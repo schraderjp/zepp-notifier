@@ -41,6 +41,11 @@ MAX_INBOX_ITEMS = 5
 # Bounds duplicated renders if the watch's `seen` report is itself lost: an item is
 # served at most this many times, then parked as 'abandoned' and reported.
 MAX_SERVES = 10
+# States that end an item's life. `rendered` is deliberately not here: it records that
+# the watch accepted the notification, not that the user dealt with it. There used to be
+# an `acked` member here that nothing ever wrote, which hid the fact that the one live
+# terminal value — `answered` — was missing from every one of these checks.
+TERMINAL_STATES = ("answered", "expired", "abandoned")
 # An item served this many times without a render report means delivery is failing
 # (measured: the phone-side service stops delivering payload-carrying responses after
 # ~12 h / ~680 polls, while empty responses keep working). Surface it rather than let
@@ -186,9 +191,19 @@ def chain_status() -> dict:
     return {"chain": state, "last_poll_age_s": age, "queue_depth": depth}
 
 
+def answered(n: dict) -> bool:
+    """Contract 5.5: the first answer stops the item being served, whatever `state` says.
+
+    Delivery keys off the invariant rather than a state string, because the answer is
+    recorded even when the render report was lost — the normal case on this device —
+    and a future state rename must not be able to resurrect an answered prompt.
+    """
+    return bool(n.get("answers"))
+
+
 def deliverable(n: dict) -> bool:
     """One predicate, so 'ready to serve' is defined in exactly one place."""
-    if n.get("state") in ("acked", "expired", "abandoned"):
+    if answered(n) or n.get("state") in TERMINAL_STATES:
         return False
     if n.get("rendered_at") or n.get("superseded_by"):
         return False
@@ -450,9 +465,11 @@ def create_notification(body: dict) -> tuple[dict, dict]:
                 }
             )
             if existing:
-                # The predecessor was already rendered, so it cannot be un-shown on the
-                # wrist. Queue a successor, stop serving the old one, and let the sender
-                # decide (v2 replaces it properly via cancel + notify).
+                # The predecessor is already rendered, or already answered, so it cannot
+                # be rewritten in place: §5.1 only allows that while it is not yet
+                # rendered *and* not yet answered (an answer is append-only). Queue a
+                # successor, stop serving the old one, and let the sender decide (v2
+                # replaces it properly via cancel + notify).
                 notif["supersedes"] = existing["id"]
                 existing["superseded_by"] = notif["id"]
                 meta["supersedes"] = existing["id"]
@@ -488,7 +505,8 @@ def inbox(since: int, peek: bool = False) -> dict:
         # must never be handed over, and the sender needs a fact saying so.
         for n in NOTIFICATIONS.values():
             if (
-                n.get("state") not in ("acked", "expired", "abandoned")
+                not answered(n)
+                and n.get("state") not in TERMINAL_STATES
                 and not n.get("rendered_at")
                 and n.get("expires_at")
                 and int(n["expires_at"]) <= now
@@ -504,7 +522,8 @@ def inbox(since: int, peek: bool = False) -> dict:
         abandoned = []
         for n in NOTIFICATIONS.values():
             if (
-                n.get("state") not in ("acked", "expired", "abandoned")
+                not answered(n)
+                and n.get("state") not in ("expired", "abandoned")
                 and not n.get("rendered_at")
                 and not n.get("superseded_by")
                 and int(n.get("served_count") or 0) >= MAX_SERVES
@@ -618,7 +637,11 @@ def seen(body: dict) -> dict:
             notif = NOTIFICATIONS.get(nid)
             if notif and not notif.get("rendered_at"):
                 notif["rendered_at"] = now_ms()
-                if notif.get("state") not in ("acked",):
+                # A late report is real information — the notification did reach the
+                # centre — but it must not demote a terminal state. In particular an
+                # answer that arrived before the report keeps `answered`, or the item
+                # silently drops off the cancel list and stays on the wrist (§5.3).
+                if not answered(notif) and notif.get("state") not in TERMINAL_STATES:
                     notif["state"] = "rendered"
                 marked += 1
                 facts.append(fact("rendered", notif))

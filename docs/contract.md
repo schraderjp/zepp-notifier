@@ -178,9 +178,12 @@ tokens — the dashboard login never substitutes. See `docs/hosting.md`.
 
 ### 5.1 `key` — replacement and idempotent retry
 
-* While the item is **not yet rendered**, `POST /v1/notify` with the same `key`
-  **replaces** the payload in place: same `id`, new content, `served_count` preserved,
-  fact `replaced`. This is free — nobody has seen it.
+* While the item is **not yet rendered and not yet answered**, `POST /v1/notify` with
+  the same `key` **replaces** the payload in place: same `id`, new content,
+  `served_count` preserved, fact `replaced`. This is free — nobody has seen it.
+* An answered item is never rewritten in place, even if it was never reported rendered:
+  answers are append-only (§5.5), so a correction queues a successor with `supersedes`
+  just as a rendered item does.
 * If it **has been rendered**, replacement cannot retract it. A new item is queued with
   the same `key` and `supersedes: <old id>`; the old item stops being served, and the
   sender receives `rendered` (old) + `queued` (new) and decides what to do.
@@ -247,13 +250,20 @@ pressed. No `unanswered` fact: a sender that wants "rendered but never answered"
 `rendered` and `answered` facts and can compute it, and `expires_at` gives it a bounded
 window to escalate within.
 
+An answer is terminal for delivery **whether or not a render report arrived** — reports
+are lost 30-40 % of the time (§5.0), so the answer alone has to be enough. Concretely:
+an item with answers is never served again, a TTL that later passes does not relabel it
+`expired`, `MAX_SERVES` does not relabel it `abandoned`, and a render report that arrives
+after the answer is recorded (`rendered_at`, `centre_id`) without demoting `state` from
+`answered` — which is what keeps the notification on the next wake's `cancel` list (§5.3).
+
 ### 5.6 Duplicates, stuck, abandoned
 
 | condition | effect | fact |
 |---|---|---|
 | report lost, item re-served | duplicate render (bounded) | `rendered` again when reported |
 | queued and unrendered for 5 min | `stuck` flag on the inbox response | none (telemetry) |
-| `MAX_SERVES` reached (10) | parked, never served again | `abandoned` |
+| `MAX_SERVES` reached (10) | parked, never served again — unanswered items only | `abandoned` |
 
 `stuck` is age-based, not serve-count-based: under cache serving the relay never sees a
 fetch that returns an already-delivered item, so `served_count` stays unset.
