@@ -22,6 +22,21 @@ no watch rebuild, no state migration. `tools/test-contract.py`: **117 passed, 0 
 (98 before; all 11 new assertions were shown failing first). Details:
 `docs/plan-fix-answered-items.md`, contract §5.1/§5.5/§5.6.
 
+## Dashboard login is now the only human credential (2026-11-08)
+
+`DASHBOARD_USER`/`DASHBOARD_PASS` used to cover only `/` and `/state`, so the page still
+asked for the operator token before it could manage apps or send a test notification.
+The login is now a scoped role (`dashboard`) that `/state`, `/v1/apps` and `/v1/notify`
+accept, and the token field is no longer rendered when a login is configured. It cannot
+touch `/v1/inbox`, `/v1/seen`, `/v1/ack`, `/v1/log`, `/v1/reset`, `/v1/events` or
+`/v1/notification/*` — the watch keeps the operator token, and the human password must
+not impersonate it. Dashboard writes carry `X-Relay-Dashboard: 1` (a cross-site form
+cannot set it; no CORS preflight is served), so the ambient Basic credential is not
+usable as CSRF. With a token but no dashboard login, `/state` now needs the token instead
+of being anonymously readable; the page falls back to its token field. Relay-only, no
+config change: `tools/test-contract.py` **130 passed, 0 failed**. Details:
+`docs/hosting.md` → "Dashboard login".
+
 ## What 0.5.6 changed (and why)
 
 | change | reason |

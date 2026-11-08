@@ -65,8 +65,8 @@ class Relay:
     def url(self, path):
         return f"http://127.0.0.1:{self.port}{path}"
 
-    def get(self, path, token=None, method="GET", body=None):
-        headers = {}
+    def get(self, path, token=None, method="GET", body=None, headers=None):
+        headers = dict(headers or {})
         if token:
             headers["Authorization"] = "Bearer " + token
         data = json.dumps(body).encode() if body is not None else None
@@ -82,8 +82,8 @@ class Relay:
             except Exception:
                 return e.code, {}, dict(e.headers)
 
-    def post(self, path, body, token=None):
-        headers = {"Content-Type": "application/json"}
+    def post(self, path, body, token=None, headers=None):
+        headers = dict(headers or {}, **{"Content-Type": "application/json"})
         if token:
             headers["Authorization"] = "Bearer " + token
         req = urllib.request.Request(
@@ -517,6 +517,7 @@ def main():
             html = r.read().decode("utf-8", "replace")
             stn = r.status
         check("no dashboard user: dashboard open", stn == 200 and "spike relay" in html, f"{stn}")
+        check("open dashboard still offers the token field", 'id="tok"' in html, html[:200])
     finally:
         naked.stop()
     locked = Relay({"DASHBOARD_USER": "op", "DASHBOARD_PASS": "s3cret", "RELAY_TOKEN": "opaque"})
@@ -543,9 +544,44 @@ def main():
         check("wrong dashboard password stays out", gotb == 401, f"{gotb}")
         st, health, _ = locked.get("/health")
         check("health needs no login", st == 200 and health.get("ok") is True, f"{st}")
-        st, _, _ = locked.get("/v1/notify", token=None) if False else (None, None, None)
         st, res, _ = locked.post("/v1/notify", {"title": "t"})
         check("API still bearer-gated without bearer", st == 401, f"{st} {res}")
+
+        # The login is the only credential a human needs: the page must not ask for
+        # the operator token again, and the dashboard's own calls must work with it.
+        with _u.urlopen(_u.Request(locked.url("/"), headers={"Authorization": good}), timeout=40) as r:
+            page = r.read().decode("utf-8", "replace")
+        check("logged-in dashboard hides the token field", 'id="tok"' not in page, page[:300])
+        check("logged-in dashboard runs in login mode", "DASHBOARD_LOGIN = true" in page, page[:200])
+        st, apps, _ = locked.get("/v1/apps", headers={"Authorization": good})
+        check("dashboard login lists apps", st == 200 and "apps" in apps, f"{st} {apps}")
+        st, made, _ = locked.post("/v1/apps", {"name": "Dash", "prefix": "dash"},
+                                  headers={"Authorization": good, "X-Relay-Dashboard": "1"})
+        check("dashboard login creates an app", st == 201 and bool(made.get("token")), f"{st} {made}")
+        st, sent, _ = locked.post("/v1/notify", {"title": "from dashboard", "body": "b"},
+                                  headers={"Authorization": good, "X-Relay-Dashboard": "1"})
+        check("dashboard login can send a test notification", st == 201, f"{st} {sent}")
+        st, revoked, _ = locked.get("/v1/apps/%s" % made["id"], method="DELETE",
+                                    headers={"Authorization": good, "X-Relay-Dashboard": "1"})
+        check("dashboard login can revoke an app", st == 200, f"{st} {revoked}")
+
+        # The login is ambient in the browser, so writes need a header a cross-site
+        # form cannot set; and it must not be able to act as the watch or wipe state.
+        st, res, _ = locked.post("/v1/apps", {"name": "NoHeader", "prefix": "nh"},
+                                 headers={"Authorization": good})
+        check("dashboard write needs the CSRF header", st == 403 and res["error"]["code"] == "csrf_header_required", f"{st} {res}")
+        st, res, _ = locked.get("/v1/inbox?device=t", headers={"Authorization": good})
+        check("dashboard login cannot drive the watch", st == 403, f"{st} {res}")
+        st, res, _ = locked.get("/v1/events?since=all", headers={"Authorization": good})
+        check("dashboard login cannot read sender facts", st == 403, f"{st} {res}")
+        st, res, _ = locked.post("/v1/reset", {}, headers={"Authorization": good, "X-Relay-Dashboard": "1"})
+        check("dashboard login cannot wipe state", st == 403, f"{st} {res}")
+
+        # ...and the bearer side is unaffected, which is what the watch and senders use.
+        st, apps2, _ = locked.get("/v1/apps", token="opaque")
+        check("operator bearer still manages apps", st == 200, f"{st} {apps2}")
+        st, inbox2, _ = locked.get("/v1/inbox?device=t", token="opaque")
+        check("operator bearer still drives the watch", st == 200, f"{st} {inbox2}")
     finally:
         locked.stop()
 

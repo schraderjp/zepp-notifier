@@ -62,11 +62,19 @@ LOG_PATH = ""
 STATE_PATH = ""
 TOKEN = ""
 # Dashboard login (human UX): DASHBOARD_USER + DASHBOARD_PASS in env. When set, the
-# browser-native login dialog replaces typing the bearer token to view the dashboard
-# and /state, and the browser remembers it per session. API endpoints (/v1/*) keep
-# using bearer tokens — this changes nothing for senders, apps, or the watch.
+# browser-native login dialog is the only credential a human needs: it opens the page,
+# /state, app management and the test-notify box, and the browser remembers it per
+# session. The operator token stays a deployment/API secret (senders, apps, the watch);
+# the dashboard does not ask for it again. Writes authenticated by the login must carry
+# X-Relay-Dashboard, which a cross-site form cannot set.
 DASHBOARD_USER = ""
 DASHBOARD_PASS = ""
+DASHBOARD_WRITE_HEADER = "X-Relay-Dashboard"
+# Routes the human login may reach: what the dashboard page actually calls. Everything
+# else (/v1/inbox, /v1/seen, /v1/ack, /v1/log, /v1/reset, /v1/events,
+# /v1/notification/*) keeps needing the operator token: the watch holds it, and the login
+# must not be able to impersonate the watch or wipe state. Reading is covered by /state.
+DASHBOARD_PATHS = ("/state", "/v1/apps", "/v1/notify")
 # Human + machine API docs served by the relay itself (GET /docs...). Resolves to the
 # repo's docs/ in dev and to the files baked into the image in Docker.
 DOCS_DIR = ""
@@ -952,7 +960,22 @@ class Handler(BaseHTTPRequestHandler):
         return role in ("open", "operator", "app")
 
     def _auth(self):
-        return auth_role(self.headers.get("Authorization") or "")
+        """(role, app). The dashboard login is a role of its own, not a bearer alias.
+
+        It is accepted only where the dashboard page actually calls, so the human
+        password can never drive the watch or wipe state. Bearer still wins, and an
+        open relay (no TOKEN) stays "open" rather than pretending to be a login.
+        """
+        role, app = auth_role(self.headers.get("Authorization") or "")
+        if role == "none" and DASHBOARD_USER and self._dashboard_ok():
+            return ("dashboard", None)
+        return (role, app)
+
+    def _dashboard_write_ok(self) -> bool:
+        """A cross-site form can carry the browser's cached Basic credential but cannot
+        add a custom header, and this relay answers no CORS preflight. Requiring one on
+        writes keeps the dashboard login from being usable as CSRF."""
+        return (self.headers.get(DASHBOARD_WRITE_HEADER) or "").strip() == "1"
 
     def _require(self, *roles):
         role, app = self._auth()
@@ -1008,24 +1031,21 @@ class Handler(BaseHTTPRequestHandler):
                     "oldest_seq": oldest,
                 },
             )
-        # Everything except /health and the static dashboard shell needs the token
-        # when one is configured. /state used to be open so a browser could read it
-        # on page load, but it carries notification bodies and answers: once this
-        # runs anywhere but a dev loopback that is a leak, and a token that protects
-        # writes while exposing reads is worse than no token because it misleads.
-        # The dashboard now asks for the token instead (see DASHBOARD_HTML).
+        # Everything except /health and the dashboard shell needs a credential when one
+        # is configured: the operator/app bearer token, or the dashboard login for the
+        # routes that page itself calls. /state stays behind one of them: it carries
+        # notification bodies and answers, and a token that protects writes while
+        # exposing reads is worse than no token because it misleads.
         if parsed.path == "/docs" or parsed.path == "/docs/":
             return self._serve_docs_page()
         if parsed.path == "/docs/index.json" or parsed.path.startswith("/docs/"):
             return self._serve_docs(parsed.path.rsplit("/", 1)[-1])
-        if parsed.path not in ("/health", "/") and not (
-            parsed.path == "/state" and self._dashboard_ok()
-        ):
-            # /state accepts either the operator bearer token (dashboard JS, apps
-            # API) or the dashboard login; the branch itself re-checks.
+        if parsed.path not in ("/health", "/"):
             role, _app = self._auth()
             if role == "none":
                 return self._send(401, {"error": "unauthorized"})
+            if role == "dashboard" and parsed.path not in DASHBOARD_PATHS:
+                return self._send(403, {"error": {"code": "forbidden", "message": "operator token required"}})
             # Device endpoints serve every tag, so they stay operator-only: the
             # phone side holds the operator token. App tokens are sender-scoped.
             if parsed.path in ("/v1/inbox", "/v1/seen", "/v1/ack", "/v1/log", "/v1/reset", "/state") and role == "app":
@@ -1039,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             peek = (query.get("peek") or ["0"])[0] in ("1", "true")
             return self._send(200, inbox(since, peek))
         if parsed.path == "/v1/apps":
-            auth = self._require("open", "operator")
+            auth = self._require("open", "operator", "dashboard")
             if not auth:
                 return None
             role, _ = auth
@@ -1112,11 +1132,15 @@ class Handler(BaseHTTPRequestHandler):
                     "notifications": list(NOTIFICATIONS.values())[-20:],
                     "events": recent,
                 },
+                extra_headers={"Cache-Control": "no-store"},
             )
         if parsed.path == "/":
             if not self._require_dashboard():
                 return None
-            return self._send(200, DASHBOARD_HTML, "text/html; charset=utf-8")
+            return self._send(
+                200, dashboard_html(), "text/html; charset=utf-8",
+                {"Cache-Control": "no-store"},
+            )
         return self._send(404, {"error": "not found"})
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -1125,8 +1149,10 @@ class Handler(BaseHTTPRequestHandler):
             if role == "none":
                 return self._send(401, {"error": "unauthorized"})
             path = urlparse(self.path).path
+            if role == "dashboard" and not self._dashboard_write_ok():
+                return self._send(403, {"error": {"code": "csrf_header_required", "message": "dashboard writes need %s: 1" % DASHBOARD_WRITE_HEADER}})
             if path.startswith("/v1/apps/"):
-                if role != "operator" and not (role == "open" and not TOKEN):
+                if role not in ("operator", "dashboard") and not (role == "open" and not TOKEN):
                     return self._send(403 if role == "app" else 401, {"error": {"code": "forbidden", "message": "operator only"}})
                 return self._apps_revoke(path.rsplit("/", 1)[-1])
             return self._send(404, {"error": "not found"})
@@ -1194,8 +1220,14 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         path = urlparse(self.path).path
 
+        if role == "dashboard":
+            if path not in DASHBOARD_PATHS:
+                return self._send(403, {"error": {"code": "forbidden", "message": "operator token required"}})
+            if not self._dashboard_write_ok():
+                return self._send(403, {"error": {"code": "csrf_header_required", "message": "dashboard writes need %s: 1" % DASHBOARD_WRITE_HEADER}})
+
         if path == "/v1/apps":
-            if role != "operator" and not (role == "open" and not TOKEN):
+            if role not in ("operator", "dashboard") and not (role == "open" and not TOKEN):
                 return self._send(403 if role == "app" else 401, {"error": {"code": "forbidden", "message": "operator only"}})
             return self._apps_create(body)
 
@@ -1276,13 +1308,13 @@ DASHBOARD_HTML = """<!doctype html>
 </style>
 <h1>zepp-notifier spike relay</h1>\n<p style="color:#888;font-size:12px">API docs for humans and machines: <a href="/docs" style="color:#7fd18d">/docs</a></p>
 <form id="f">
- <input id="tok" placeholder="relay token (leave blank for dev)" autocomplete="off">
+__TOKEN_INPUT__
  <input name="title" placeholder="Title" value="Medication">
  <input name="body" placeholder="Body" value="Did you take your morning medication?">
  <input name="actions" placeholder="Actions, comma separated" value="Yes,No,Snooze">
  <button>Send notification</button>
 </form>
-<h1 style="font-size:15px;margin:16px 0 8px">Applications <span style="font-weight:400;font-size:12px;color:#888">app keys own one tag prefix each; the operator token manages them</span></h1>
+<h1 style="font-size:15px;margin:16px 0 8px">Applications <span style="font-weight:400;font-size:12px;color:#888">one tag prefix each; the app token is shown once</span></h1>
 <form id="appform">
  <input name="name" placeholder="App name, e.g. Meds" style="width:38%;display:inline-block">
  <input name="prefix" placeholder="tag prefix, e.g. meds" style="width:38%;display:inline-block">
@@ -1292,14 +1324,27 @@ DASHBOARD_HTML = """<!doctype html>
 <table><thead><tr><th>app</th><th>prefix</th><th>token</th><th></th></tr></thead><tbody id="apps"></tbody></table>
 <table style="margin-top:16px"><thead><tr><th>t</th><th>event</th><th>detail</th></tr></thead><tbody id="rows"></tbody></table>
 <script>
+// With DASHBOARD_USER/PASS set, the browser already carries the login and the relay
+// accepts it for this page's calls: there is no bearer token to type. Without a login
+// (dev / open relay) the operator token is typed here and kept in localStorage.
+const DASHBOARD_LOGIN = __DASHBOARD_LOGIN__;
 const tokEl = document.getElementById('tok');
-tokEl.value = localStorage.getItem('relay_token') || '';
-tokEl.addEventListener('change', () => {
-  localStorage.setItem('relay_token', tokEl.value.trim());
-  refresh();
-});
+if (tokEl) {
+  tokEl.value = localStorage.getItem('relay_token') || '';
+  tokEl.addEventListener('change', () => {
+    localStorage.setItem('relay_token', tokEl.value.trim());
+    refresh(); refreshApps();
+  });
+}
 function authHeaders(extra) {
   const h = Object.assign({}, extra || {});
+  if (DASHBOARD_LOGIN) {
+    // The login is ambient (a browser sends cached Basic auth on any same-origin
+    // request, including a cross-site form POST), so a custom header is what proves
+    // the caller is this page. The relay rejects dashboard writes without it.
+    h['X-Relay-Dashboard'] = '1';
+    return h;
+  }
   const t = tokEl.value.trim();
   if (t) h.Authorization = 'Bearer ' + t;
   return h;
@@ -1368,6 +1413,22 @@ async function refresh(){
 refresh(); refreshApps(); setInterval(refresh, 3000); setInterval(refreshApps, 10000);
 </script>
 """
+
+TOKEN_INPUT_HTML = ' <input id="tok" placeholder="relay token (leave blank for dev)" autocomplete="off">'
+
+
+def dashboard_html() -> str:
+    """Dashboard shell, with the bearer-token field only when there is no login.
+
+    With DASHBOARD_USER/PASS set the browser holds a credential the relay accepts for
+    this page's own calls, so asking for the operator token again is precisely the
+    friction the login exists to remove. Without a login (dev / open relay) the field
+    stays: that is how the apps API and the send box authenticate.
+    """
+    manual = not DASHBOARD_USER
+    return DASHBOARD_HTML.replace(
+        "__TOKEN_INPUT__", TOKEN_INPUT_HTML if manual else ""
+    ).replace("__DASHBOARD_LOGIN__", "false" if manual else "true")
 
 
 def main() -> None:

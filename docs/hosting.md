@@ -40,32 +40,48 @@ relay: cannot read --token-file /run/secrets/relay_token: [Errno 2] No such file
 | endpoint | with token | notes |
 |---|---|---|
 | `GET /health` | **open** | a monitor must be able to watch without a secret |
-| `GET /` | **open** | static dashboard shell; it asks for the token, then fetches |
-| `GET /state` | gated | carries notification bodies and answers |
-| `GET /v1/inbox` | gated | device-facing |
-| `POST /v1/notify`, `/v1/seen`, `/v1/ack`, `/v1/log` | gated | |
-| `POST /v1/reset` | gated | same token wipes the queue: a leaked token is destructive |
+| `GET /` | open shell | the page itself needs the dashboard login when one is configured |
+| `GET /state` | gated | operator token **or** dashboard login; carries bodies and answers |
+| `GET/POST /v1/apps`, `DELETE /v1/apps/<id>` | gated | operator token **or** dashboard login (writes need a header, see below) |
+| `GET /v1/inbox` | gated | device-facing; operator token only |
+| `POST /v1/notify` | gated | operator token, app token (inside its prefix) **or** dashboard login |
+| `POST /v1/seen`, `/v1/ack`, `/v1/log` | gated | device/telemetry; operator token only |
+| `POST /v1/reset` | gated | operator token only: a leaked token is destructive |
 
-The dashboard stores whatever token you type in `localStorage` and sends it as a bearer
-header, so it works in both modes without a server-side session.
+Without a dashboard login (dev), the page keeps a token field and stores it in
+`localStorage`, so it works with the bearer token as before.
 
 ### Applications: no relay touch to add a sender
 
-Open the dashboard, enter the operator token, and create an app per sender: a name
-plus one tag prefix (e.g. `meds`). The token is shown exactly once — hand it to the
-sender as its `Authorization: Bearer` value. It queues only inside its prefix and
-reads only its own facts; overlapping prefixes are refused, revoking is one click
-(`DELETE /v1/apps/<id>`), and nothing restarts. The API equivalents are
-`GET/POST /v1/apps` (operator).
+Open the dashboard (log in, or enter the operator token when no login is configured) and
+create an app per sender: a name plus one tag prefix (e.g. `meds`). The token is shown
+exactly once — hand it to the sender as its `Authorization: Bearer` value. It queues only
+inside its prefix and reads only its own facts; overlapping prefixes are refused,
+revoking is one click (`DELETE /v1/apps/<id>`), and nothing restarts. The API equivalents
+are `GET/POST /v1/apps` (operator token or dashboard login).
 
 ### Dashboard login
 
 Set `DASHBOARD_USER` and `DASHBOARD_PASS` (compose passes both through; either works
 from Dockhand variables or `.env`). The browser pops its native login dialog once and
-remembers it per session — no more typing the bearer token to view the dashboard. The
-API is untouched: senders, apps and the watch keep using bearer tokens, `/health` and
-`/docs` stay open, and half-configuring (user without password) refuses to start
-rather than running half-locked.
+remembers it per session. That login is the only credential a human needs: it opens the
+page, `/state`, app management and the test-notify box, so the page never asks for the
+operator token and the token field is not rendered. Half-configuring (user without
+password) refuses to start rather than running half-locked.
+
+The login is a **scoped role**, not an alias for the token. It cannot call
+`/v1/inbox`, `/v1/seen`, `/v1/ack`, `/v1/log`, `/v1/reset`, `/v1/events` or
+`/v1/notification/<id>`; those keep requiring the operator token the watch holds. Because
+the browser sends its cached Basic credential on any same-origin request (including a
+cross-site form POST), dashboard-authenticated **writes** must also carry
+`X-Relay-Dashboard: 1`. A plain form cannot set that header, and this relay answers no
+CORS preflight, so the login is not usable as CSRF. The custom dashboard does this
+automatically; a script using the login must add the header itself.
+
+The bearer side is untouched: senders, apps and the watch keep using bearer tokens,
+`/health` and `/docs` stay open. With a token configured and **no** dashboard login,
+`/state` requires the token (type it into the page); it is no longer readable
+anonymously, which is what the token was supposed to prevent.
 
 ### The watch also needs the token
 

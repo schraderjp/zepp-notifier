@@ -14,8 +14,10 @@ services:
     # (an unreadable token file is fatal, by design).
     environment:
       - RELAY_TOKEN=${RELAY_TOKEN}
-      # Dashboard login (browser remembers it per session; API tokens unaffected).
-      # Leave unset for an open dashboard.
+      # Dashboard login (browser remembers it per session). It is the only credential a
+      # human needs: page, /state, app management and the test-notify box all accept it,
+      # so the operator token never has to be looked up. API tokens for senders, apps and
+      # the watch are unaffected. Leave unset for an open dashboard (token field shown).
       - DASHBOARD_USER=${DASHBOARD_USER:-}
       - DASHBOARD_PASS=${DASHBOARD_PASS:-}
     volumes:

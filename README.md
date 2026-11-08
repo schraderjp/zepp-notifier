@@ -104,10 +104,13 @@ Docker / Dockhand (see [`docs/hosting.md`](docs/hosting.md) for the full runbook
 ```sh
 cp .env.example .env              # optional
 printf 'your-token\n' > secrets/relay_token && chmod 600 secrets/relay_token
+# The dashboard login is optional but recommended: it is the only credential a
+# human types, so the operator token never has to be looked up to manage apps.
 docker compose up -d --build      # or deploy this repo from Dockhand via git
 ```
 
-Dashboard: `http://<host>:8097/` (asks for the token when one is set).
+Dashboard: `http://<host>:8097/` (log in with `DASHBOARD_USER`/`DASHBOARD_PASS`;
+it only asks for the bearer token when no dashboard login is configured).
 API docs, human and machine: `http://<host>:8097/docs` (always open — no
 secrets in them; an integrating agent starts at `/docs/index.json`).
 
