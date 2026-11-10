@@ -9,7 +9,15 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.13** (code 80) is **built, not installed**
+**0.9.14** (code 81) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.14-20261110113918.zab`). It fixes the tap-receipt bug
+measured today: since 0.9.5 the watch has not received the side's ack reply, so every press
+retried its carrier ladder for up to three hours while the relay had recorded the answer on
+the first frame. The side now cannot lose the reply to a throw (the likely cause), the ladder
+is bounded at 12 attempts (~37 min), and `tap.ack-sent` makes "sent, no reply" distinguishable
+from "never sent". Force-stop the Zepp app after installing so the new side code takes effect.
+
+**0.9.13** (code 80):
 (`dist/10262217-Notify_Relay-0.9.13-20261110110904.zab`). It replaces the oneshot chain
 with a single repeating heartbeat, on the strength of the 0.9.12 measurement: one record,
 `repeat_type: REPEAT_MINUTE`, `repeat_period: 1`, `store: true`, armed once by the page and

@@ -31,7 +31,7 @@ const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
 // Reported with side.online so the trace names the build that produced it. Keep it
 // equal to app.json's version.name: the side ships inside the same package.
-const SIDE_VERSION = '0.9.13'
+const SIDE_VERSION = '0.9.14'
 
 // Installing a build starts a NEW side-service instance and never stops the old one
 // (`onDestroy` never fires; force-stop does not kill them - docs/findings.md). Measured
@@ -461,17 +461,28 @@ AppSideService({
       }
 
       if (req.t === MSG.ACK) {
-        dropFromCache([req.i])
-        // Answer BEFORE the HTTP: the watch is inside a single-execution budget
-        // and exits on this response. That response is also the watch's receipt,
-        // which is why the report comes first: a tap that reached us is recorded
-        // even if this instance dies before the POST.
+        // Answer BEFORE the HTTP: the watch is inside a single-execution budget and gives up
+        // when this response arrives, so the reply comes first and the bookkeeping after.
         ctx.response({ data: { ok: true } })
+        // MEASURED 2026-11-10: from 0.9.5 onwards the watch never received this reply, so every
+        // press retried its full ladder and no `tap.sent` was ever logged again, while the relay
+        // recorded each ack on the first attempt. The watch kept working; only the receipt was
+        // lost. The suspects are the calls below: if any of them throws, the handler does not
+        // return cleanly and the queued reply is never flushed. They are also the only part of
+        // this branch that differs from the poll path, which always replies correctly. So: never
+        // let them take the reply down with them.
+        try {
+          dropFromCache([req.i])
+        } catch (e) {}
         // tap.received is the side's record of "an ack arrived from the watch". Do NOT also
         // report ack.received: the relay records that itself in its POST /v1/ack handler,
         // and emitting it here too made `grep -c ack.received` count every answer twice.
-        report('tap.received', { i: req.i, a: req.a, via: 'request', device_ts: req.ts })
-        sendAck({ id: req.i, action: req.a, ts: req.ts })
+        try {
+          report('tap.received', { i: req.i, a: req.a, via: 'request', device_ts: req.ts })
+        } catch (e) {}
+        try {
+          sendAck({ id: req.i, action: req.a, ts: req.ts })
+        } catch (e) {}
         return
       }
 
@@ -499,9 +510,14 @@ AppSideService({
         return
       } else if (msg.t === MSG.ACK) {
         // Older watch builds sent the ack as a Notify frame. Still accepted, and still
-        // named in the trace, so a mixed pairing is diagnosable from events alone.
-        report('tap.received', { i: msg.i, a: msg.a, via: 'notify', device_ts: msg.ts })
-        sendAck({ id: msg.i, action: msg.a, ts: msg.ts })
+        // named in the trace, so a mixed pairing is diagnosable from events alone. Wrapped
+        // for the same reason as the request path above.
+        try {
+          report('tap.received', { i: msg.i, a: msg.a, via: 'notify', device_ts: msg.ts })
+        } catch (e) {}
+        try {
+          sendAck({ id: msg.i, action: msg.a, ts: msg.ts })
+        } catch (e) {}
       } else if (msg.t === MSG.LOG) {
         report(msg.e || 'device.log', { data: msg })
       }

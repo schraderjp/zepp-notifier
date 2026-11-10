@@ -193,6 +193,9 @@ async function runWake(watch, param) {
       state.frames.push({ type: 'data', port2, payloadType, traceId, json })
 
       if (!opts.respondRequest) return true
+      // `respondAck: false` models the measured failure: the side receives the ack, records it
+      // at the relay, and the reply never reaches the watch.
+      if (json && json.t === protocol.MSG.ACK && opts.respondAck === false) return true
       const answer =
         json && json.t === protocol.MSG.POLL ? { items: opts.items || [], cancel: opts.cancel || [] } : { ok: true }
       const data = json2buf(answer)
@@ -398,6 +401,30 @@ console.log('\ntap: an unparseable press is still visible')
   check('tap-no-id reaches the relay on the same wake', logs(st, 'tap-no-id').length === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
   check('tap-no-id sends no ack', reqs(st, 'a').length === 0)
   check('tap-no-id arms no retry', st.carries.length === 0, JSON.stringify(st.carries))
+}
+
+console.log('\ntap: a dispatch is reported even when the reply never comes back')
+{
+  // Measured 2026-11-10: from 0.9.5 the watch never received the side's ack reply, so every
+  // press retried its whole ladder for an answer the relay had recorded on the first frame,
+  // and the log showed neither tap.sent nor a failure - silence that read like "never sent".
+  // The dispatch is now its own fire-and-forget fact, immune to that.
+  const w = makeWatch()
+  const st = await runWake(w, TAP)
+  const sent = logs(st, 'tap.ack-sent')
+  check('the dispatch of an ack is logged', sent.length === 1, String(sent.length))
+  check('it names the press and the attempt', sent[0] && sent[0].json.i === '18-93cebd' && sent[0].json.try === 0, JSON.stringify(sent[0] && sent[0].json))
+
+  // Unanswered: the dispatch is still reported, and there is no tap.sent.
+  const dead = await runWake(makeWatch({ respondAck: false }), TAP)
+  check('an unanswered ack still reports the dispatch', logs(dead, 'tap.ack-sent').length === 1, '')
+  check('an unanswered ack shows no tap.sent', logs(dead, 'tap.sent').length === 0, '')
+  check('an unanswered ack keeps the carrier armed', dead.carries.length === 1 && dead.cancelledAlarms.length === 0, '')
+
+  // The ladder is bounded: a retry past the bound arms nothing, which is what stops a lost
+  // reply from costing three hours of wakes for a press that was answered instantly.
+  const capped = await runWake(makeWatch(), 'retry=1&i=18-93cebd&a=taken&ts=1&n=12')
+  check('the ladder stops at 12 attempts', capped.carries.length === 0, String(capped.carries.length))
 }
 
 console.log('\nheartbeat: the schedule is one repeating record the OS owns')

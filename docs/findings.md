@@ -1014,3 +1014,36 @@ it.
 
 Trade accepted deliberately: delivery latency stays at the 60 s grid it already had, and the
 watch wakes once a minute either way - the heartbeat is not cheaper, it is *unlosable*.
+
+### The ack reply stopped arriving at 0.9.5, and the ladder retried an answered press for hours
+
+Measured 2026-11-10 ~11:30, from `events.jsonl`:
+
+* the last `tap.sent` (the watch's "I received the side's answer") is **08:52:38**;
+* from 23:07:05 the ladder starts instead: `tap.received try=N` + `tap.retry` every 90 s, then
+  every 300 s, while the relay records `ack.received` on the *first* attempt
+  (`appended: false`, `known: true` on every retry - nothing was ever duplicated or lost);
+* and there is **no `tap-send-failed` and no `ack.nores` at all**, which is the tell: the
+  watch's request callback never ran, in either direction. Silence, not failure.
+
+So the side receives the ack and answers (`ctx.response` is called before the HTTP work, and
+the relay's `ack.sent` follows within 11-105 ms), but the reply frame never reaches the
+watch's `mb.on('response')`. Poll requests over the same transport always get their reply, so
+the difference is inside the side's ACK branch - the only branch that calls `ctx.response`
+*and then keeps working*. If `dropFromCache`, `report` or `sendAck` throws, the handler does
+not return cleanly and the queued reply is not flushed.
+
+Three fixes in 0.9.14, in increasing order of how much they would have helped today:
+
+1. **The side can no longer lose the reply to a throw** - both the request and the notify acks
+   wrap their post-reply work in try/catch. This is the likely root cause.
+2. **The ladder is bounded at 12 attempts** (~37 min) instead of 40 (~3 h). It was sized when a
+   missed retry meant a lost answer; the relay records the ack on the first frame, so the long
+   ladder only ever bought wakes for presses that were answered immediately.
+3. **A dispatch is now its own telemetry** (`tap.ack-sent {try}`), flushed *after* the request
+   goes out. Fire-and-forget frames arrive reliably - that is how `tap.received` gets here - so
+   "we sent it, the reply never came" is now a visible fact rather than an absence that looked
+   exactly like "the press was never handled".
+
+The diagnostic rule this adds: **`tap.ack-sent` with no `tap.sent` = the reply leg is broken;
+neither = the wake never got a link.** Before, both looked identical.

@@ -86,7 +86,12 @@ const MAX_LOGS = 24
 // matters is "Bluetooth is off for a while", where 40 attempts still cover ~3 h without
 // spending a wake a minute.
 const RETRY_MARK = 'retry=1'
-const RETRY_MAX = 40
+// 40 was chosen when a missed tap cost the answer itself. Since the ack is recorded by the
+// relay on the first frame (measured: `ack.received appended: false` on every retry), a long
+// ladder buys nothing and costs a carrier alarm plus a wake every 5 min for three hours - and
+// when the side's reply is lost those retries all fire for a press that was answered instantly.
+// 12 attempts is ~37 min: long enough to outlast a doze or a dropped link, short enough to stop.
+const RETRY_MAX = 12
 const RETRY_FIRST_SEC = 90
 const RETRY_LATER_SEC = 300
 // 'probe' = E1, transport only. 'poll' = E2, fetch + render.
@@ -577,7 +582,11 @@ function tap(raw) {
       queueLog({ t: MSG.LOG, e: 'tap-no-shake', i, a, try: attempt })
       return quit('tap-no-shake')
     }
-    flushLogs()
+    // Queue the dispatch BEFORE the request so the same flush that carries tap.received also
+    // carries the fact that this attempt went out. Fire-and-forget frames always arrive (that
+    // is how tap.received itself gets here); the reply to the request does not, and its
+    // absence used to look identical to "the press was never answered".
+    queueLog({ t: MSG.LOG, e: 'tap.ack-sent', i, a, try: attempt, ts })
     sendAck(i, a, ts, (sent) => {
       if (sent) {
         // Answered: stop the retry chain. If the cancel itself fails the alarm fires once
@@ -589,6 +598,7 @@ function tap(raw) {
       flushLogs()
       quit(sent ? 'tap' : 'tap-unacked')
     })
+    flushLogs()
   })
 }
 
