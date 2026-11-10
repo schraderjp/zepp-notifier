@@ -788,3 +788,38 @@ same boundary anchor, `time` instead of `delay`, the constant passed through, pa
 reports `tick.fence{kind:"repeat", rm, pending}`. If it fires, `rm` also tells us what
 `REPEAT_MINUTE` actually is on this firmware; if it stays silent, the oneshot fence still
 degrades delivery to five minutes and nothing regresses.
+
+### The exit advice reframes the hours-long silence
+
+@SashaCX75's guidance (via Discord), and the docs agree with it: a **single-execution App
+Service must exit as soon as its work is done**, and `@zos/app-service` (with `exit`) *is*
+available inside a service. This file's earlier note - "importing @zos/app-service into an
+app service is a load-time failure" - is more likely a bad *named* import (`{ exit }` was
+probably not a valid export, which takes the whole bundle down) than a real restriction: the
+0.4.5-0.4.11 builds that tried it also called `start()`.
+
+Why it matters here: this app holds the one background-service slot the platform grants. Our
+`quit()` only set a flag and dropped the builder - it never exited. A wake that returns with
+work still pending (a shake promise that never settles, a listener still registered) can keep
+that slot, and then **alarms keep firing into a service the OS cannot start**. That is exactly
+the measured overnight signature:
+
+* `chainId` barely advanced - the alarms were armed and consumed, our code never ran;
+* nothing in `events.jsonl` for 5.2 h, from either end;
+* opening the app cleared it immediately.
+
+It also explains why the oneshot chain could run for hours and then stop dead, with nothing
+wrong at the moment it stopped.
+
+0.9.10 therefore calls `appService.exit()` in `quit()` - the single exit point every terminal
+path already funnels through - with a namespace import and a typeof guard. Harness coverage:
+an acked tap, a poll, a fence wake, a disarmed wake and an unparseable press each exit exactly
+once; a wake that never shakes has not exited, because the OS is the only thing that can reap
+it.
+
+The repeat-alarm sweep is implemented (`setSweepArm`/`SWEEP_VARIANTS`, isolating the official
+sample's zeroed `week_days`/`start_time`/`end_time` fields, the anchor and the period) but is
+**not armed**: the official sample also settles the constant question - its
+`repeatTypeArray = ["ONCE","MINUTE",...]` is indexed by `repeat_type`, so MINUTE is 1, i.e.
+exactly what our fallback has always sent - and changing the exit path in the same build would
+confound any repeat result. One variable at a time.

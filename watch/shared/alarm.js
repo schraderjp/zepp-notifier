@@ -224,10 +224,23 @@ function onceValue() {
 }
 
 export function repeatMinuteValue() {
+  return repeatTypeInfo().rm
+}
+
+// Which numeric value we actually send for `repeat_type`, and whether it came from the
+// module constant or from our fallback. This has been the standing suspect since 0.4.5
+// ("if that constant is not 1 on this API level, the alarm may be scheduled hourly or
+// daily - indistinguishable from never fires inside a two-hour window") and it was never
+// observable, because it was only ever logged on the repeat path - the one that fails.
+// `src: 'fallback'` means @zos/alarm does not export REPEAT_MINUTE here and every repeat
+// alarm we have armed carried a guess.
+export function repeatTypeInfo() {
   try {
-    return typeof alarmMgr.REPEAT_MINUTE === 'number' ? alarmMgr.REPEAT_MINUTE : 1
+    const v = alarmMgr.REPEAT_MINUTE
+    if (typeof v === 'number') return { rm: v, src: 'const' }
+    return { rm: 1, src: 'fallback' }
   } catch (e) {
-    return 1
+    return { rm: 1, src: 'error' }
   }
 }
 
@@ -565,6 +578,88 @@ export function setRepeatFence(periodMin) {
   result.rm = rm
   result.period = period
   result.pendingNow = result.ok ? pendingIds().indexOf(Number(result.id)) >= 0 : false
+  return result
+}
+
+// --- the repeat-alarm sweep (a time-boxed experiment) --------------------------
+//
+// The official sample (zeppos-samples, application/3.0/3.0-feature/pages/newAlarm.js) settles
+// the `repeat_type` question and moves the suspicion somewhere else:
+//
+//   const repeatTypeArray = ["ONCE","MINUTE","HOUR","DAY","WEEK","MONTH","YEAR"]
+//   repeat_text.setProperty(TEXT, repeatTypeArray[alarmObj.repeat_type])
+//   alarmObj.repeat_type = value_index          // the picker writes the index straight in
+//
+// so MINUTE is **1**, which is exactly what our fallback has always sent. The constant was
+// never the problem. What the sample does and we do not: it always passes THREE extra fields -
+// `week_days: 0, start_time: 0, end_time: 0` - even for non-weekly types, and it always
+// schedules with `time` (absolute UTC seconds), never `delay`. The docs say start_time/end_time
+// bound when a repeat reminder "takes effect"; a record with a repeat_type but no window is a
+// plausible "accepted, listed, never scheduled" candidate - which is exactly what we measured.
+//
+// So the sweep is a 2x2 isolation around the sample's form, each record tagged:
+//   s1  time  period 1  with zeros   <- the sample's field set, verbatim
+//   s2  time  period 1  no zeros     <- isolates the zeroed week/window fields
+//   s3  delay period 1  with zeros   <- isolates the anchor
+//   s4  time  period 10 with zeros   <- the period we have already failed with twice
+//
+// Any one firing names the axis. The sweeper (+65 min) cancels the experiment and restores
+// chain + fence, so a failed sweep leaves nothing armed.
+export const SWEEP_VARIANTS = [
+  { tag: 's1', useTime: true, period: 1, zeros: true },
+  { tag: 's2', useTime: true, period: 1, zeros: false },
+  { tag: 's3', useTime: false, period: 1, zeros: true },
+  { tag: 's4', useTime: true, period: 10, zeros: true },
+]
+
+function boundaryFireAt(periodMin) {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const secToMinute = 60 - (nowSec % 60)
+  const minuteOfHour = Math.floor((nowSec % 3600) / 60)
+  let minutesToBoundary = periodMin - (minuteOfHour % periodMin) - 1
+  if (minutesToBoundary < 0) minutesToBoundary += periodMin
+  return nowSec + 15 + secToMinute + minutesToBoundary * 60
+}
+
+export function setSweepAlarm(variant) {
+  const v = variant || {}
+  const period = Math.max(1, Math.min(30, Math.floor(Number(v.period) || 1)))
+  const fireAt = boundaryFireAt(period)
+  const alarm = {
+    url: NOTIFIER_SERVICE,
+    param: 'via=alarm&mode=oneshot&sv=' + String(v.tag || '?'),
+    store: STORE,
+    repeat_type: repeatMinuteValue(),
+    repeat_period: period,
+    repeat_duration: 1,
+  }
+  if (v.useTime === false) alarm.delay = clampDelay(fireAt - Math.floor(Date.now() / 1000))
+  else alarm.time = fireAt
+  if (v.zeros) {
+    // Verbatim from the official sample, including for non-weekly types.
+    alarm.week_days = 0
+    alarm.start_time = 0
+    alarm.end_time = 0
+  }
+  const result = trySet(alarm)
+  if (result.ok) rememberId(result.id)
+  result.tag = String(v.tag || '?')
+  result.fireAt = fireAt
+  result.period = period
+  result.shape = (v.useTime === false ? 'delay' : 'time') + (v.zeros ? '+zeros' : '')
+  return result
+}
+
+// +65 min: cancel everything (cancelAllTickAlarms sweeps the table when the per-context
+// registry is empty, which it always is in a fresh context) and let the caller re-arm.
+export function setSweepEnd(delaySec) {
+  const result = trySet({
+    url: NOTIFIER_SERVICE,
+    param: 'via=alarm&mode=oneshot&sweepend=1',
+    store: STORE,
+    delay: clampDelay(Number(delaySec) || 3900),
+  })
+  if (result.ok) rememberId(result.id)
   return result
 }
 

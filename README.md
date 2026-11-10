@@ -105,7 +105,10 @@ is visible instead of being guessed at.
 
 If the watch sits with the screen off for hours (overnight), alarm delivery can stop
 entirely — measured at 5.2 h on a watch that was **worn and awake**, so it is not
-the sleep-mode setting. Two provisions: opening **Notify Relay** re-arms the chain by
+the sleep-mode setting. A single-execution App Service must call `appService.exit()` when its work is done (0.9.10+),
+or a wake can leave the one background-service slot held and later alarms never run.
+
+Two provisions: opening **Notify Relay** re-arms the chain by
 itself when the phone reports the last tick is old or never (0.9.6+), and an
 independent **fence** chain runs every 5 min (0.9.8+) so one missed delivery costs
 latency instead of the night. The fence is a oneshot chain, not a repeating alarm:

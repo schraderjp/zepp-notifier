@@ -122,6 +122,7 @@ function makeWatch(options = {}) {
     devlog: [],
     inbound: null,
     armedCalls: 0,
+    exits: 0, // app-service exit() calls
     pending: [], // what getAllAlarms() reports: fence + any live chain alarm
     fences: [], // setFenceAlarm() calls
     repeatFences: [], // setRepeatFence() calls
@@ -227,6 +228,11 @@ async function runWake(watch, param) {
       },
     },
     '@zos/storage': { localStorage: storage },
+    '@zos/app-service': {
+      exit: () => {
+        state.exits++
+      },
+    },
     '@zos/fs': { readFileSync: () => '', writeFileSync: () => true },
     '../shared/message': instantiate(
       join(ROOT, 'shared/message.js'),
@@ -262,6 +268,7 @@ async function runWake(watch, param) {
         return true
       },
       repeatMinuteValue: () => 1,
+      repeatTypeInfo: () => ({ rm: 1, src: 'const' }),
       setRepeatFence: (periodMin) => {
         const entry = { periodMin: periodMin === undefined ? 10 : periodMin, id: state.nextAlarmId++ }
         state.repeatFences.push(entry)
@@ -438,6 +445,31 @@ console.log('\nfence(repeat): the OS repeats it, so the wake must not re-arm any
   check('tick.fence says kind:repeat', tel.kind === 'repeat', JSON.stringify(tel))
   check('tick.fence reports the repeat_type value we sent', tel.rm === 1, JSON.stringify(tel))
   check('a repeat-fence wake still delivers', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
+}
+
+console.log('\nexit: every terminal path releases the service slot')
+{
+  // The platform gives one background service slot, and a single-execution service that
+  // never exits can hold it with work still pending - the shape of the 5.2 h silences.
+  const tapRun = await runWake(makeWatch(), TAP)
+  check('an acked tap exits exactly once', tapRun.exits === 1, String(tapRun.exits))
+
+  const pollRun = await runWake(makeWatch(), 'via=alarm&mode=oneshot&show=0')
+  check('a poll wake exits exactly once', pollRun.exits === 1, String(pollRun.exits))
+
+  const fenceRun = await runWake(makeWatch(), 'via=alarm&mode=oneshot&fence=1')
+  check('a fence wake exits exactly once', fenceRun.exits === 1, String(fenceRun.exits))
+
+  const offRun = await runWake(makeWatch({ storage: fakeStorage({ relay_armed: '0' }) }), 'via=alarm&mode=oneshot&show=0')
+  check('a disarmed wake exits too', offRun.exits === 1, String(offRun.exits))
+
+  const badRun = await runWake(makeWatch(), 'i=&a=x')
+  check('an unparseable press still exits', badRun.exits === 1, String(badRun.exits))
+
+  // A dead link never reaches the exit path (the handshake promise never settles), which is
+  // precisely why the OS must reap that case - and why nothing may be left pending after it.
+  const deadRun = await runWake(makeWatch({ respondShake: false }), TAP)
+  check('a wake that cannot shake has not exited (OS reaps it)', deadRun.exits === 0, String(deadRun.exits))
 }
 
 console.log('\ntelemetry: tick.wake is observable (defect 4)')

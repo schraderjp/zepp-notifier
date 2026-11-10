@@ -52,14 +52,16 @@ import {
   setCarryAlarm,
   cancelAlarm,
   setFenceAlarm,
-  repeatMinuteValue,
+  setSweepEnd,
+  repeatTypeInfo,
 } from '../shared/alarm'
-// NO `@zos/app-service` IMPORT. Measured: 0.4.3 (no such import) executed and
-// rendered; 0.4.5-0.4.11 (with it) never executed once. Importing the module that
-// manages app services into an app service is a load-time failure here, which
-// means AppService() is never registered, start() still returns 0, and nothing
-// runs. That import was an attempt to call exit(); see quit() below for how this
-// file avoids needing it.
+// `@zos/app-service` IS available inside an App Service (documented: the module is
+// supported, only UI/timers/high-power sensors are not), and `exit()` is how a
+// single-execution service releases its slot. 0.4.5-0.4.11 concluded the import was a
+// load-time failure; the likelier reading is that the *named* `{ exit }` binding was not a
+// valid export and took the bundle down. A namespace import plus a typeof guard cannot fail
+// that way, which is the form the maintainer of a 24/7 app uses.
+import * as appService from '@zos/app-service'
 import { append as devLog } from '../shared/devlog'
 
 const logger = log.getLogger('relay.tick')
@@ -92,10 +94,13 @@ const RETRY_MARK = 'retry=1'
 const RETRY_MAX = 40
 const RETRY_FIRST_SEC = 90
 const RETRY_LATER_SEC = 300
-// Pending-alarm limit before the storm guard disarms. Raised from 3 because a tap waiting
-// to be answered legitimately holds one alarm of its own, and the guard's response is to
-// cancel every alarm we own - which would throw away exactly those presses.
-const STORM_LIMIT = 8
+// Pending-alarm limit before the storm guard disarms. 3 was too tight once a tap waiting to
+// be answered keeps an alarm of its own, and 8 is too tight for the 0.9.10 repeat_type sweep,
+// which arms one record per numeric value beside the chain, the oneshot fence and the repeat
+// fence (about 11 in total). The sweep is time-boxed: its sweeper wake cancels everything and
+// restores chain + fence, so this ceiling is temporary and deliberately loose. A real runaway
+// (an alarm per wake) still trips it within minutes.
+const STORM_LIMIT = 20
 
 // 'probe' = E1, transport only. 'poll' = E2, fetch + render.
 const TICK_KIND = 'poll'
@@ -150,10 +155,22 @@ function quit(reason) {
     devLog('tick exit: ' + reason)
   } catch (e) {}
   mb = null
-  // No exit() call: `exit` is neither a global nor safely importable from
-  // @zos/app-service in this runtime (importing it stopped the service loading).
-  // This file is woken only by alarms, which the OS runs as single-execution and
-  // reaps on return. It must never be appServiceMgr.start()ed.
+  // EVERY exit point goes through here, and a single-execution service must release its slot
+  // explicitly - docs: "single execution means exiting the App Service as soon as the
+  // execution of the relevant code is completed"; field advice from the maintainer of a 24/7
+  // alarm app: call exit() at every exit point, including inside catch.
+  //
+  // Why this is the leading explanation for the hours-long silences: this file is the one
+  // background service slot the platform allows. A wake that returns without exiting can
+  // leave the slot held with work still pending (a shake promise that never settles, a
+  // listener still registered), and then alarms keep firing into a service that cannot be
+  // started - which matches exactly what the relay measured: no tick.wake for 5.2 h, chainId
+  // barely advancing (the alarms fired, the code never ran), and an app open clearing it.
+  //
+  // Guarded and namespace-imported on purpose: an absent member must not take the file down.
+  try {
+    if (appService && typeof appService.exit === 'function') appService.exit()
+  } catch (e) {}
 }
 
 // --- transport --------------------------------------------------------------
@@ -409,16 +426,41 @@ function tick(param) {
   // wake must never re-arm it and never touch the chain. Checked before `fence=1` because
   // 'rfence=1' contains 'fence=1'.
   const repeatFence = raw.indexOf('rfence=1') >= 0
-  const fence = !repeatFence && raw.indexOf('fence=1') >= 0
+  const sweepAt = raw.indexOf('rt=') >= 0
+  const sweepEnd = raw.indexOf('sweepend=1') >= 0
+  const fence = !repeatFence && !sweepAt && raw.indexOf('fence=1') >= 0
+  const rtInfo = repeatTypeInfo()
   let chain = null
   let armF = null
-  if (repeatFence) {
+  if (sweepEnd) {
+    // End of the repeat_type sweep: cancel every alarm we own and restore the working pair,
+    // so a failed experiment leaves nothing armed. This wake is the only one allowed to tear
+    // the table down.
+    cancelAllTickAlarms()
+    if (armed) {
+      chain = armNextOneshot(false)
+      armF = setFenceAlarm()
+    }
+    queueLog({ t: MSG.LOG, e: 'tick.sweepend', chain: chainVerdict(chain), fenceOk: armF && armF.ok ? 1 : 0 })
+  } else if (sweepAt) {
+    // One `repeat_type` variant fired. Name it, do not re-arm it, do not touch the chain.
+    queueLog({
+      t: MSG.LOG,
+      e: 'tick.fence',
+      kind: 'sweep',
+      rt: paramValue(raw, 'rt'),
+      rm: rtInfo.rm,
+      rmSrc: rtInfo.src,
+      pending: pendingNow.length,
+    })
+  } else if (repeatFence) {
     // The measurement: no re-arm, one poll, and `rm` reports the repeat_type value we sent.
     queueLog({
       t: MSG.LOG,
       e: 'tick.fence',
       kind: 'repeat',
-      rm: repeatMinuteValue(),
+      rm: rtInfo.rm,
+      rmSrc: rtInfo.src,
       pending: pendingNow.length,
     })
   } else if (fence) {
@@ -432,6 +474,13 @@ function tick(param) {
       kind: 'oneshot',
       pending: pendingNow.length,
       fenceOk: armF && armF.ok ? 1 : 0,
+      // The instrument that does not depend on the mechanism under test: this fence fires
+      // every five minutes, so the constant's real value and provenance are observable
+      // within minutes even when every repeat record stays silent.
+      rm: rtInfo.rm,
+      rmSrc: rtInfo.src,
+      api: apiLevel(),
+      exit: typeof appService.exit === 'function' ? 'fn' : 'no',
     })
   } else if (armed && viaAlarm) {
     // No prune here. Cancelling "extra" alarms cancels the one whose wake is in

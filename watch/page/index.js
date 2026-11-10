@@ -21,6 +21,7 @@ import { getPackageInfo } from '@zos/app'
 import * as ble from '@zos/ble'
 import * as appServiceMgr from '@zos/app-service'
 import { log } from '@zos/utils'
+import { localStorage } from '@zos/storage'
 import { MessageBuilder } from '../shared/message'
 import {
   armNotifier,
@@ -38,6 +39,10 @@ import {
   BG_PERMISSION,
   ALARM_PERMISSION,
   ensureBgPermission,
+  setSweepAlarm,
+  setSweepEnd,
+  SWEEP_VALUES,
+  repeatTypeInfo,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 

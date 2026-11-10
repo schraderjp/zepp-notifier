@@ -9,7 +9,15 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.9** (code 76) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.9-*.zab`).
+**0.9.10** (code 77) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.10-*.zab`).
+It calls `appService.exit()` at every exit point, which is the leading explanation for the
+hours-long silences: a single-execution service that returns without exiting can hold the one
+background-service slot, after which alarms fire into a service the OS cannot start (measured
+signature: `chainId` barely advances, no `events.jsonl` from either end, app open clears it).
+Also logs `exit: fn|no` and `api:` in the fence telemetry, so the runtime's surface is visible
+from the relay rather than guessed at.
+
+**0.9.9** (code 76):
 It adds the repeat fence **beside** 0.9.8's oneshot fence, armed the way the working
 reference (SashaCX75/Weather-service) arms its own: first fire anchored to a period boundary
 via absolute `time`, `alarmMgr.REPEAT_MINUTE` passed straight through, `repeat_period: 10`,
