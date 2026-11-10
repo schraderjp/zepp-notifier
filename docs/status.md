@@ -9,7 +9,17 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.12** (code 79) is **installed and the experiment is running** — and it settles the
+**0.9.13** (code 80) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.13-20261110110904.zab`). It replaces the oneshot chain
+with a single repeating heartbeat, on the strength of the 0.9.12 measurement: one record,
+`repeat_type: REPEAT_MINUTE`, `repeat_period: 1`, `store: true`, armed once by the page and
+then owned by the OS. The service no longer writes alarms at all (it logs, polls, exits) —
+the chain, the fence, the sweeper and the storm guard are gone, and with them the failure
+mode where one missed delivery ended the schedule. A full re-arm happens only when the page
+sees an empty alarm table or a stale phone-side tick; a tap still arms its transient carrier
+alarm.
+
+**0.9.12** (code 79) was installed and its experiment ran — and it settles the
 question this project has carried since 0.4.5: **repeat alarms work on this watch.**
 `tick.hb` fired for `hb1` (`delay 60`, `repeat_period 1`) at exactly 60 s intervals and for
 `hb2` (`repeat_period 2`, with `repeat_duration: 1`) at 120 s, with `rm: 1, rmSrc: "const"`.

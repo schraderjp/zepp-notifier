@@ -45,14 +45,10 @@ import { localStorage } from '@zos/storage'
 import { log } from '@zos/utils'
 import { MSG, decodeActionParam, encodeActionParam, normalizeNotification } from '../shared/protocol'
 import {
-  armNext,
-  armNextOneshot,
   pendingIds,
   cancelAllTickAlarms,
   setCarryAlarm,
   cancelAlarm,
-  setFenceAlarm,
-  repeatTypeInfo,
 } from '../shared/alarm'
 // `@zos/app-service` IS available inside an App Service (documented: the module is
 // supported, only UI/timers/high-power sensors are not), and `exit()` is how a
@@ -93,14 +89,6 @@ const RETRY_MARK = 'retry=1'
 const RETRY_MAX = 40
 const RETRY_FIRST_SEC = 90
 const RETRY_LATER_SEC = 300
-// Pending-alarm limit before the storm guard disarms. 3 was too tight once a tap waiting to
-// be answered keeps an alarm of its own, and 8 is too tight for the 0.9.10 repeat_type sweep,
-// which arms one record per numeric value beside the chain, the oneshot fence and the repeat
-// fence (about 11 in total). The sweep is time-boxed: its sweeper wake cancels everything and
-// restores chain + fence, so this ceiling is temporary and deliberately loose. A real runaway
-// (an alarm per wake) still trips it within minutes.
-const STORM_LIMIT = 20
-
 // 'probe' = E1, transport only. 'poll' = E2, fetch + render.
 const TICK_KIND = 'poll'
 
@@ -370,14 +358,6 @@ function render(items) {
 }
 
 // One verdict string shared by the notification and the beacon. "skipped" and
-// "failed" are very different: skipped means armNext() refused on purpose because
-// the table already had >= 3 entries, failed means set() was rejected.
-function chainVerdict(chain) {
-  if (!chain) return 'off'
-  if (chain.ok) return 'ok:' + (chain.shape || '?')
-  if (chain.skipped) return 'skip:' + String(chain.skipped).slice(0, 24)
-  return 'FAIL:' + String(chain.reason || '?').slice(0, 40)
-}
 
 function tick(param) {
   const raw = String(param || '')
@@ -392,119 +372,31 @@ function tick(param) {
   const show = raw.indexOf('show=1') >= 0
   const armed = isArmed()
 
-  // Re-arm FIRST: synchronous, no BLE, and it must happen before anything that
-  // can hang. Cancels every alarm we own and arms exactly one 60 s out, so the
-  // cadence never depends on repeat_period/repeat_duration being honoured.
-  // Storm guard, before anything else: if the table has piled up, this build is
-  // misbehaving. Cancel everything and switch the app off rather than arm more.
+  // THE HEARTBEAT IS THE WHOLE SCHEDULE. Measured on this watch 2026-11-10: a repeat alarm
+  // with `repeat_period: 1` fires every 60 s indefinitely, so the OS carries the cadence and
+  // this file must never touch the alarm table. That retires the oneshot chain (where one
+  // missed wake ended everything, which is what happened for 5.2 h), the fence, the sweeper
+  // and the storm guard.
+  //
+  // The contract this file keeps, copied from a 24/7 alarm app that has run for months: the
+  // page is the only alarm writer, and a wake is READ-ONLY with respect to alarms. Do not
+  // add a set()/cancel() here. The one exception is the tap path above, which arms a carrier
+  // alarm so an unanswered press survives this context - that alarm is transient by design.
   const pendingNow = pendingIds()
-  if (pendingNow.length > STORM_LIMIT) {
-    devLog('tick STORM GUARD pending=' + JSON.stringify(pendingNow))
-    try {
-      cancelAllTickAlarms()
-    } catch (e) {}
-    selfDisarm()
-    try {
-      notify({ title: 'Tick disabled', content: 'too many alarms: ' + pendingNow.length + ', cleared', actions: [] })
-    } catch (e) {}
-    return quit('storm')
-  }
-
-  // Only an ALARM wake re-arms. A tap cold-starts this file too, and re-arming
-  // there added an alarm per tap.
   const viaAlarm = raw.indexOf('via=alarm') >= 0
-  // The chain continues in the mode it was started in. A oneshot chain is the
-  // safe one: `delay` only, no repeat_* fields, so it cannot express a storm.
-  const oneshot = raw.indexOf('mode=oneshot') >= 0
-  // The fence is the second, independent oneshot chain (alarm.js setFenceAlarm): it exists
-  // so that a missed delivery of the MAIN chain's next alarm slows delivery to five minutes
-  // instead of stopping it. It re-arms only itself - never the main chain - because pending
-  // alarms come back as bare ids, so "is the main chain alive" is not answerable from here,
-  // and a wrong guess adds an alarm permanently (N pending -> N wakes a minute).
-  // `rfence=1` is the REPEAT fence (alarm.js setRepeatFence): the OS repeats it, so this
-  // wake must never re-arm it and never touch the chain. Checked before `fence=1` because
-  // 'rfence=1' contains 'fence=1'.
-  const repeatFence = raw.indexOf('rfence=1') >= 0
   const heartbeat = raw.indexOf('hb=') >= 0
-  const heartbeatEnd = raw.indexOf('hbe=1') >= 0
-  const fence = !repeatFence && !heartbeat && !heartbeatEnd && raw.indexOf('fence=1') >= 0
-  const rtInfo = repeatTypeInfo()
-  let chain = null
-  let armF = null
-  if (heartbeatEnd) {
-    // End of the heartbeat experiment: cancel every alarm we own and restore the working pair.
-    // This is the only wake allowed to tear the table down.
-    cancelAllTickAlarms()
-    if (armed) {
-      chain = armNextOneshot(false)
-      armF = setFenceAlarm()
-    }
-    queueLog({ t: MSG.LOG, e: 'tick.hbe', chain: chainVerdict(chain), fenceOk: armF && armF.ok ? 1 : 0 })
-  } else if (heartbeat) {
-    // A heartbeat record fired. That alone settles the question we have been asking for two
-    // days - but do not re-arm it (the OS repeats it) and do not touch the chain, so a working
-    // experiment is not turned into a duplicate-alarm storm.
-    queueLog({
-      t: MSG.LOG,
-      e: 'tick.hb',
-      hb: paramValue(raw, 'hb'),
-      rm: rtInfo.rm,
-      rmSrc: rtInfo.src,
-      pending: pendingNow.length,
-    ids: pendingNow,
-      api: apiLevel(),
-    })
-  } else if (repeatFence) {
-    // The measurement: no re-arm, one poll, and `rm` reports the repeat_type value we sent.
-    queueLog({
-      t: MSG.LOG,
-      e: 'tick.fence',
-      kind: 'repeat',
-      rm: rtInfo.rm,
-      rmSrc: rtInfo.src,
-      pending: pendingNow.length,
-    })
-  } else if (fence) {
-    if (armed) armF = setFenceAlarm()
-    // `pending` is the diagnostic: 2 means the main chain's next alarm is still in the
-    // table beside this fence, 1 means this wake is alone - the main chain died and the
-    // fence is now carrying the whole cadence.
-    queueLog({
-      t: MSG.LOG,
-      e: 'tick.fence',
-      kind: 'oneshot',
-      pending: pendingNow.length,
-      fenceOk: armF && armF.ok ? 1 : 0,
-      // The instrument that does not depend on the mechanism under test: this fence fires
-      // every five minutes, so the constant's real value and provenance are observable
-      // within minutes even when every repeat record stays silent.
-      rm: rtInfo.rm,
-      rmSrc: rtInfo.src,
-      api: apiLevel(),
-      exit: typeof appService.exit === 'function' ? 'fn' : 'no',
-    })
-  } else if (armed && viaAlarm) {
-    // No prune here. Cancelling "extra" alarms cancels the one whose wake is in
-    // progress (the alarm being fired is still listed as pending during its own
-    // wake), which is the documented way to wedge the scheduler. Growth is
-    // bounded by armNext()'s >= 3 refusal and the storm guard above it.
-    chain = oneshot ? armNextOneshot(show) : armNext(show, 60)
-  }
 
-  // Then the proof-of-execution notification, carrying the chain result: one
-  // glance tells us whether this wake scheduled the next one.
+  // Proof of execution, in the notification the `show` flag asks for: one glance shows the
+  // heartbeat's own state without reading anything off the watch.
   if (show) {
     try {
-      // The chain verdict goes in the TITLE: it is the one thing we need to read
-      // off the watch, and notification titles are rendered large.
       notify({
-        title: 'Tick ' + chainVerdict(chain),
+        title: 'Tick hb=' + (heartbeat ? paramValue(raw, 'hb') : '-'),
         content:
-          'id=' + (chain && chain.id !== undefined ? chain.id : '-') +
+          'pending=' + pendingNow.length +
           ' ble=' + bleStatus() +
           ' api=' + apiLevel() +
-          ' armed=' + (armed ? 1 : 0) +
-          (chain && !chain.ok && chain.reason ? ' ' + String(chain.reason).slice(0, 60) : ''),
+          ' armed=' + (armed ? 1 : 0),
         actions: [],
         vibrate: 2,
       })
@@ -544,13 +436,11 @@ function tick(param) {
     wake: raw,
     ble: st,
     conn: connected,
-    // Readable in the server trace, which beats squinting at the watch.
-    fence: fence || repeatFence ? 1 : 0,
+    // Readable in the server trace, which beats squinting at the watch. `ids` is the whole
+    // alarm table: with one heartbeat expected, anything else in it is a leak we can see.
     hb: heartbeat ? 1 : 0,
     pending: pendingNow.length,
-    chain: chainVerdict(chain),
-    chainId: chain && chain.id !== undefined ? chain.id : -1,
-    chainErr: chain && !chain.ok ? String(chain.reason || chain.skipped || '').slice(0, 80) : '',
+    ids: pendingNow,
   })
 
   connect((ok) => {

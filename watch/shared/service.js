@@ -16,16 +16,7 @@ import {
   writeCadence,
   cycleCadence,
   CADENCE_STEPS,
-  ensureTickAlarm,
-  forceTickAlarm,
-  setFenceAlarm,
-  setRepeatFence,
-  setHeartbeat,
-  setHeartbeatEnd,
-  HEARTBEAT_VARIANTS,
-  repeatTypeInfo,
-  FENCE_PERIOD_SEC,
-  REPEAT_FENCE_PERIOD_MIN,
+  setHeartbeatAlarm,
   cancelAllTickAlarms,
   pendingIds,
   armedIds,
@@ -49,16 +40,7 @@ export {
   pendingIds,
   armedIds,
   ourIds,
-  ensureTickAlarm,
-  forceTickAlarm,
-  setFenceAlarm,
-  setRepeatFence,
-  setHeartbeat,
-  setHeartbeatEnd,
-  HEARTBEAT_VARIANTS,
-  repeatTypeInfo,
-  FENCE_PERIOD_SEC,
-  REPEAT_FENCE_PERIOD_MIN,
+  setHeartbeatAlarm,
 }
 
 export const ARMED_KEY = 'relay_armed'
@@ -156,16 +138,16 @@ export function ensureBgPermission(cb) {
 export function armNotifier(cb, options) {
   setArmed(true)
   ensureBgPermission((perm) => {
-    // Force, never dedupe: see forceTickAlarm(). A spent-but-pending alarm must
-    // not make this a no-op.
-    const result = forceTickAlarm(options)
+    // ONE record, every time. Cancelling first is what makes this idempotent and what
+    // removes the leftovers of any earlier experiment or chain; the heartbeat the OS
+    // repeats then carries the cadence with no further writes from us.
+    let swept = 0
+    try {
+      swept = cancelAllTickAlarms()
+    } catch (e) {}
+    const result = setHeartbeatAlarm(options && options.delaySec, options && options.show)
     result.perm = perm
-    // The fence is re-armed with every Arm press because forceTickAlarm() swept every
-    // alarm we own (including the previous fence). One repeating alarm, never re-armed by
-    // the tick: see setFenceAlarm().
-    result.fence = setFenceAlarm()
-    // The repeat fence is an experiment beside the oneshot one; see setRepeatFence().
-    result.repeatFence = setRepeatFence()
+    result.swept = swept
     if (cb) cb(result)
   })
 }

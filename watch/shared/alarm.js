@@ -254,209 +254,10 @@ function trySet(alarm) {
   }
 }
 
-// `shape` reports which argument form the OS accepted.
-//
-// MEASURED / FIELD-VERIFIED: the alarm option that actually fires on real
-// hardware is the one from SashaCX75's Weather-service, reproduced in
-// zepp-health/discussions/393:
-//
-//   { url: 'app-service/background_service',
-//     repeat_type: alarmMgr.REPEAT_MINUTE, repeat_period: 5, repeat_duration: 2,
-//     store: STORE, delay: 30 }
-//
-// No `appid`, no `file`, no `date`. We had been sending `appid` + `file` + `date`
-// (the shape from the *notification* sample, which is a different feature): the OS
-// accepts that record and returns an id, then never schedules it. That is exactly
-// the "id, stored, never fires" state we kept measuring.
-export function setTickAlarm(options) {
-  const show = !!(options && options.show)
-  // REPEAT is fenced off (decision 2026-11-05): a persistent REPEAT alarm re-armed
-  // every wake is the 0.4.23 storm shape, and with STORE=true a reboot would not
-  // clear it. The oneshot chain gives the same 60 s cadence with at most one alarm
-  // in existence. Refuse loudly rather than silently downgrading, so a caller that
-  // asks for repeat learns it did not get it.
-  if (options && options.mode === MODE_REPEAT) {
-    return {
-      ok: false,
-      reason: 'repeat fenced off: use oneshot (see docs/status.md 0.8.x)',
-      mode: MODE_REPEAT,
-      show,
-      fenced: true,
-    }
-  }
-  const mode = MODE_ONESHOT
-  const delaySec = clampDelay(options && options.delaySec)
-  const param = 'via=alarm' + (mode === MODE_ONESHOT ? '&mode=oneshot' : '') + (show ? '&show=1' : '')
-  const url = NOTIFIER_SERVICE
-  const nowSec = Math.floor(Date.now() / 1000)
-  const windowEnd = nowSec + REPEAT_WINDOW_SEC
 
-  // The docs (device-app-api/newAPI/alarm/set) settle the field names:
-  //   url        required, "file path to wake up Mini Program, supporting App Service"
-  //   time       UTC seconds, higher priority than delay; one of time/delay required
-  //   delay      seconds from now; one of time/delay required
-  //   repeat_period / repeat_duration
-  //              "a period of the current repeat_type, containing repeat_period
-  //              times, repeat_duration times before the reminder" - i.e.
-  //              repeat_duration is reminders PER PERIOD (default 1), so 1440
-  //              asks for 1440 reminders inside a one-minute period, which the OS
-  //              drops silently. That is the 1440 measurement explained.
-  //   start_time / end_time
-  //              "the repeat reminder only takes effect during the repeat time
-  //              period" - never set by us, which is why a repeat alarm fired
-  //              once from `delay` and then never again.
-  // HARD LIMIT: one reminder per period, always.
-  //
-  // `repeat_duration` means "reminders inside one period", and with
-  // REPEAT_MINUTE that makes 1440 a *legal* request for 1440 wakes per minute.
-  // The OS will not reject it, and it is the shape that wedged a watch badly
-  // enough to need a factory reset (each wake writes flash via devlog). Nothing
-  // here may express more than one wake per period, so a future edit cannot
-  // reintroduce that class of storm by changing a constant.
-  const repeat = {
-    repeat_type: repeatMinuteValue(),
-    repeat_period: 1,
-    repeat_duration: 1,
-    start_time: nowSec,
-    end_time: windowEnd,
-  }
 
-  const attempts =
-    mode === MODE_REPEAT
-      ? [
-          // Everything the docs describe, in one option: delay for the first
-          // fire, one reminder per one-minute period, explicit repeat window.
-          ['url+window', Object.assign({ url, param, store: STORE, delay: delaySec }, repeat)],
-          // `time` instead of `delay`, since time has priority and some builds
-          // only honour it.
-          ['url+time+window', Object.assign({ url, param, store: STORE, time: nowSec + delaySec }, repeat)],
-          // Window but no store, in case persistence is what is rejected.
-          ['url+window-nostore', Object.assign({ url, param, delay: delaySec }, repeat)],
-          // The shape that reliably fired once: no window.
-          ['url', { url, param, repeat_type: repeatMinuteValue(), repeat_period: 1, repeat_duration: 1, store: STORE, delay: delaySec }],
-          // Bare minimum, no param: fires but the tick cannot tell it was woken.
-          ['url-noparam', { url, store: STORE, delay: delaySec }],
-        ]
-      : [
-          ['url-delay', { url, param, store: STORE, delay: delaySec }],
-          ['url-time', { url, param, store: STORE, time: nowSec + delaySec }],
-          ['url-delay-noparam', { url, store: STORE, delay: delaySec }],
-        ]
 
-  const errs = []
-  for (const [shape, alarm] of attempts) {
-    const result = trySet(alarm)
-    if (result.ok) {
-      rememberId(result.id)
-      const pending = pendingIds()
-      return {
-        ok: true,
-        id: result.id,
-        shape,
-        mode,
-        show,
-        date: nowSec + delaySec,
-        pending: pending.indexOf(Number(result.id)) >= 0,
-        total: pending.length,
-        errs,
-      }
-    }
-    errs.push(shape + ':' + result.err)
-  }
-  return { ok: false, reason: errs.join(' | ').slice(0, 120), errs, mode, show, date: nowSec + delaySec }
-}
 
-// FORCE a fresh alarm: cancel everything we own, then set exactly one.
-//
-// 0.4.17 deduped here and that was a trap: a *pending but spent* alarm (fired
-// once with repeat_duration 1) still counts as "already armed", so pressing Arm
-// again armed nothing and the watch stayed silent. Dedupe is only correct for
-// the automatic path (app launch); a user pressing Arm means "make it work now".
-export function forceTickAlarm(options) {
-  cancelAllTickAlarms()
-  const result = setTickAlarm(options)
-  result.count = result.ok ? 1 : 0
-  result.forced = true
-  return result
-}
-
-// Repeat mode: idempotent, based on our registry intersected with what the OS
-// still lists. Oneshot: nothing to dedupe against - a fired ONCE alarm is
-// consumed - so the chain cancels its own previous id.
-export function ensureTickAlarm(options) {
-  if ((options && options.mode) !== MODE_ONESHOT) {
-    return {
-      ok: false,
-      reason: 'repeat fenced off: use oneshot (see docs/status.md 0.8.x)',
-      mode: MODE_REPEAT,
-      fenced: true,
-    }
-  }
-  const mode = MODE_ONESHOT
-  if (false) {
-    const live = armedIds()
-    if (live.length) {
-      return { ok: true, already: true, count: live.length, id: live[0], mode, dedupe: 'registry' }
-    }
-    // The registry is per-context storage, so the PAGE always sees it empty even
-    // when the service has armed alarms. Treat the OS list as truth: sweep and
-    // set one, instead of adding another on every app launch.
-    if (pendingIds().length) cancelAllTickAlarms()
-  } else {
-    cancelStored()
-  }
-  const result = setTickAlarm(options)
-  result.count = result.ok ? 1 : 0
-  result.dedupe = 'registry'
-  return result
-}
-
-// The tick's own re-arm, called at the top of every wake.
-//
-// It cancels every alarm we created and then arms exactly one, so the cadence
-// does not depend on repeat semantics at all: whether the OS honours
-// repeat_period or treats the alarm as one-shot, the next wake is always
-// scheduled 60 s out and there is never more than one alarm registered. That
-// also makes the chain self-healing after a reboot, a missed wake or a reinstall.
-export function armNext(show, delaySec) {
-  // Fenced off with repeat mode (decision 2026-11-05). The oneshot chain uses
-  // armNextOneshot; this is kept so a stale caller fails loudly, not silently.
-  return {
-    ok: false,
-    skipped: 'repeat fenced off',
-    id: -1,
-    shape: 'fenced',
-    pending: pendingIds(),
-  };
-  // Refuse to stack beyond 3. Refusing at >0 would break the chain: the alarm
-  // being fired is often still listed as pending during its own wake, so "one is
-  // pending" is the normal, healthy state. Growth is bounded instead by the
-  // storm guard in the service (>3 -> cancel all + disarm), which also fires if
-  // the OS stops consuming alarms.
-  const pending = pendingIds()
-  if (pending.length >= 3) {
-    return { ok: false, skipped: 'too many pending', id: -1, shape: 'skipped', pending }
-  }
-  // Deliberately does NOT cancel anything first.
-  //
-  // 0.4.18/0.4.19 cancelled every alarm we owned at the top of a wake - which
-  // includes the alarm that is *currently firing*. A cancelled alarm mid-fire is a
-  // good way to wedge the scheduler, and it is the one difference between this
-  // chain and 0.1.4's (which only ever cancelled the previous id, from inside a
-  // service, and fired repeatedly for hours).
-  //
-  // Each wake arms exactly one new alarm; the one it woke from is consumed by the
-  // OS (repeat_duration 1), so the table does not grow in normal operation.
-  return setTickAlarm({ mode: MODE_REPEAT, show, delaySec: delaySec || 60 })
-}
-
-// Kept for callers that want a single explicit wake.
-export function armNextOneshot(show, delaySec) {
-  cancelStored()
-  // Steady-state cadence, not the 30 s first-wake proof delay: the tick re-arms
-  // itself this far out on every wake.
-  return setTickAlarm({ mode: MODE_ONESHOT, show, delaySec: delaySec || readCadence() })
-}
 
 // --- carrying data across wakes ---------------------------------------------
 //
@@ -517,138 +318,34 @@ export function cancelAlarm(id) {
 // each arming one more). So the fence only ever re-arms itself: it degrades delivery to a
 // 5-minute cadence instead of stopping it, and a `tick.fence` with no `tick.wake` beside it
 // is the measurement that says the main chain died while delivery still works.
-export const FENCE_PERIOD_SEC = 300
-
-export function setFenceAlarm(delaySec) {
-  const delay = clampDelay(Number(delaySec) || FENCE_PERIOD_SEC)
+// --- the heartbeat -------------------------------------------------------------
+//
+// MEASURED on this watch, 2026-11-10 (0.9.12): `repeat_period: 1` fires every 60 s, twelve
+// times in a row with no misses; `repeat_period: 2` every 120 s; `repeat_period: 10` with
+// `delay: 600` fired with its first hop at exactly 600 s; and `alarmMgr.REPEAT_MINUTE` reads
+// **1** (reported as `rm: 1, rmSrc: "const"`). Every earlier "repeat alarms never fire here"
+// conclusion was an artifact of arming order and of judging inside one period.
+//
+// So the schedule is ONE of these, armed once by the page and never re-set. It replaces the
+// oneshot chain, whose fatal property is that the next wake exists only if this wake re-armed
+// it - the failure that cost 5.2 h of silence, and the reason a 24/7 reference app rejects
+// chained scheduling in writing.
+export function setHeartbeatAlarm(delaySec, show) {
+  const period = 1
   const result = trySet({
     url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&fence=1',
-    store: STORE,
-    delay: delay,
-  })
-  if (result.ok) rememberId(result.id)
-  result.delaySec = delay
-  return result
-}
-
-// --- the REPEAT fence (measured against a working reference) -------------------
-//
-// SashaCX75/Weather-service is the only repeat-alarm example known to work, and it does
-// three things our 0.9.7 attempt did not:
-//
-//   1. its first fire is anchored to a period boundary - `delay = 15 + secsToNextMinute +
-//      minutesToNext10 * 60`, i.e. it lands on xx:x0:15. Ours was a flat `delay: 600` from
-//      whenever the user pressed Arm, so it landed at an arbitrary offset. The docs' own
-//      repeat examples pass `time` (absolute UTC seconds) and never a bare arbitrary delay.
-//   2. it passes the module constant straight through (`alarmMgr.REPEAT_MINUTE`). We route it
-//      through `repeatMinuteValue()`, whose fallback of 1 is only correct if that constant
-//      really is 1 on this firmware - which is why `rm` is now in the telemetry.
-//   3. the docs' repeat semantics are offset by one: "one repeat period ... containing
-//      repeat_period times", and their example "reminder every 21 days" uses
-//      repeat_period: 20. So `repeat_period: 10` means an 11-minute interval, not 10.
-//
-// 0.9.9 arms this ALONGSIDE the oneshot fence rather than replacing it. If the repeat record
-// fires, `tick.fence{kind:"repeat"}` says so and the oneshot fence can be retired; if it
-// stays silent like last time, nothing regresses.
-export const REPEAT_FENCE_PERIOD_MIN = 10
-
-export function setRepeatFence(periodMin) {
-  const period = Math.max(2, Math.min(30, Math.floor(Number(periodMin) || REPEAT_FENCE_PERIOD_MIN)))
-  // Boundary anchor, the Weather-service formula: next whole minute, then the next
-  // `period`-minute boundary, plus 15 s so the fire is never scheduled in the past.
-  const nowSec = Math.floor(Date.now() / 1000)
-  const secToMinute = 60 - (nowSec % 60)
-  const minuteOfHour = Math.floor((nowSec % 3600) / 60)
-  let minutesToBoundary = period - (minuteOfHour % period) - 1
-  if (minutesToBoundary < 0) minutesToBoundary += period
-  const fireAt = nowSec + 15 + secToMinute + minutesToBoundary * 60
-  const rm = repeatMinuteValue()
-  const result = trySet({
-    url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&rfence=1',
-    store: STORE,
-    time: fireAt,
-    repeat_type: rm,
-    repeat_period: period,
-    repeat_duration: 1,
-  })
-  if (result.ok) rememberId(result.id)
-  result.fireAt = fireAt
-  result.rm = rm
-  result.period = period
-  result.pendingNow = result.ok ? pendingIds().indexOf(Number(result.id)) >= 0 : false
-  return result
-}
-
-// --- the heartbeat experiment --------------------------------------------------
-//
-// Nieole/water-reminders is a maintained app (Zepp OS 6, min API level 4.0, same as us) whose
-// entire architecture is a single repeating "heartbeat" alarm, and its docs record a real-device
-// measurement (T-Rex 3, 2026-08-07) of the exact shape we concluded was impossible:
-//
-//   set({ url: 'app-service/tick', delay: 600, repeat_type: REPEAT_MINUTE,
-//         repeat_period: 10, store: true })          // registered once, never re-set
-//
-//   * first hop after registration: exactly 60 s   * repeat_period == minutes per period
-//   * survives reboot with store: true             * single execution 46-111 ms of the 600 budget
-//   * param arrives in onInit(params)              * getAllAlarms() -> [id]
-//
-// The decisive detail: their record passes **no `repeat_duration`**, which is the one field our
-// silent 0.9.7/0.9.9 records always sent (docs list it as optional, default 1 - "reminders per
-// period"). Everything else we tried matches theirs.
-//
-// So the sweep is three records, isolating exactly that:
-//   hb1  their record verbatim:  delay 60,  period 1,  no repeat_duration
-//   hb2  same, plus repeat_duration: 1            <- the only difference, the suspect
-//   hb3  their production grid: delay 600, period 10, no repeat_duration
-export const HEARTBEAT_VARIANTS = [
-  { tag: 'hb1', delay: 60, period: 1 },
-  { tag: 'hb2', delay: 60, period: 2, duration: 1 },
-  { tag: 'hb3', delay: 600, period: 10 },
-]
-
-export function setHeartbeat(variant) {
-  const v = variant || {}
-  const period = Math.max(1, Math.min(30, Math.floor(Number(v.period) || 10)))
-  const alarm = {
-    url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&hb=' + String(v.tag || '?'),
-    delay: clampDelay(Number(v.delay) || period * 60),
+    // `show=1` makes every wake raise a proof-of-execution notification; it rides in the
+    // param because a repeating record cannot be re-armoured per wake.
+    param: 'via=alarm&mode=oneshot&hb=1' + (show ? '&show=1' : ''),
+    delay: clampDelay(Number(delaySec) || period * 60),
     repeat_type: repeatMinuteValue(),
     repeat_period: period,
     store: STORE,
-  }
-  // hb2 is the control for the one field we have always sent and they never do.
-  if (v.duration) alarm.repeat_duration = v.duration
-  const result = trySet(alarm)
-  if (result.ok) rememberId(result.id)
-  result.tag = String(v.tag || '?')
-  result.period = period
-  result.duration = v.duration || 0
-  return result
-}
-
-// End of the experiment: cancel everything and let the caller restore the working pair, so a
-// silent heartbeat leaves nothing armed.
-export function setHeartbeatEnd(delaySec) {
-  const result = trySet({
-    url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&hbe=1',
-    store: STORE,
-    delay: clampDelay(Number(delaySec) || 3900),
   })
   if (result.ok) rememberId(result.id)
+  result.period = period
   return result
 }
-
-export function cancelFence() {
-  // Ids are opaque, so "cancel the fence" means cancel everything we own - the same sweep
-  // Disarm performs. Callers use it only when the whole chain is being torn down.
-  return cancelAllTickAlarms()
-}
-
-// --- diagnostics ------------------------------------------------------------
 
 export function alarmDump() {
   const pending = pendingIds()

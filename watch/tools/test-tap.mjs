@@ -400,76 +400,55 @@ console.log('\ntap: an unparseable press is still visible')
   check('tap-no-id arms no retry', st.carries.length === 0, JSON.stringify(st.carries))
 }
 
-console.log('\nfence: an independent oneshot chain that can only re-arm itself')
+console.log('\nheartbeat: the schedule is one repeating record the OS owns')
 {
-  // A fence wake must re-arm the NEXT fence (it is a chain, not a repeating alarm) and must
-  // never add a main-chain alarm: N pending alarms produce N wakes a minute, so a wrong
-  // revival would double the cadence for good.
-  const w = makeWatch()
-  w.state.pending = [900, 1001] // fence + the main chain's next alarm
-  const st = await runWake(w, 'via=alarm&mode=oneshot&fence=1')
-  check('the fence re-arms itself', st.fences.length === 1, JSON.stringify(st.fences))
-  check('the next fence is 5 min out', (st.fences[0] || {}).delaySec === 300, JSON.stringify(st.fences))
-  check('it does NOT touch the main chain', st.armedCalls === 0, String(st.armedCalls))
-  check('it never installs a repeat alarm', st.frames.every((f) => !(f.json && f.json.e === 'tick.fence' && f.json.repeat)), '')
-  const tel = (logs(st, 'tick.fence')[0] || {}).json || {}
-  check('tick.fence reports the pending count', tel.pending === 2, JSON.stringify(tel))
-  check('...and its own re-arm result', tel.fenceOk === 1, JSON.stringify(tel))
-  check('a fence wake still delivers', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
+  // Arming is the page's job, and it must produce exactly one record: cancel everything,
+  // then set the heartbeat. Anything else in the table is a leak that shows up as extra
+  // wakes for the life of the install.
+  // shared/alarm.js is the only thing that shapes the record, so test that module directly
+  // against a stub alarm API: no BLE, no page, just what we would hand the OS.
+  const calls = []
+  const armed = instantiate(join(ROOT, 'shared/alarm.js'), {
+    '@zos/alarm': {
+      set: (o) => {
+        calls.push(o)
+        return 700 + calls.length
+      },
+      cancel: () => 0,
+      getAllAlarms: () => [],
+      REPEAT_MINUTE: 1,
+    },
+    '@zos/app': { getPackageInfo: () => ({ appId: 10262217, packageName: 'Notify Relay' }) },
+    '@zos/storage': { localStorage: fakeStorage() },
+    '@zos/utils': utilsStub(eventModule.EventBus),
+    '@zos/fs': { openSync: () => 0, writeSync: () => 0, closeSync: () => 0, readSync: () => 0, statSync: () => null, O_CREAT: 0, O_TRUNC: 0 },
+  }, ['setHeartbeatAlarm', 'cancelAllTickAlarms']).setHeartbeatAlarm()
+  check('arming sets exactly one record', calls.length === 1, String(calls.length))
+  const rec = calls[0]
+  check('it is a repeat record', rec.repeat_type === 1, String(rec.repeat_type))
+  check('on a one-minute period', rec.repeat_period === 1, String(rec.repeat_period))
+  check('it survives reboot', rec.store === true, String(rec.store))
+  check('it is a oneshot service url wake', rec.url === 'app-service/notifier', rec.url)
+  check('the parameter names the heartbeat', /hb=1/.test(rec.param), rec.param)
+  check('no repeat_duration is sent (the field we wrongly blamed)', rec.repeat_duration === undefined, String(rec.repeat_duration))
 
-  // Main chain gone: one pending alarm, meaning this wake is alone. The fence keeps its own
-  // cadence and says so, instead of guessing whether to revive.
-  const alone = makeWatch()
-  alone.state.pending = [900]
-  const st2 = await runWake(alone, 'via=alarm&mode=oneshot&fence=1')
-  const tel2 = (logs(st2, 'tick.fence')[0] || {}).json || {}
-  check('a lone fence is visible as pending:1', tel2.pending === 1, JSON.stringify(tel2))
-  check('a lone fence still does not arm the main chain', st2.armedCalls === 0, String(st2.armedCalls))
-  check('a lone fence still polls, so delivery degrades instead of stopping', reqs(st2, 'poll').length === 1)
+  // The service must never touch the alarm table. This is the whole point of the change:
+  // a chain that re-arms itself can lose the night with one missed delivery, and a
+  // service that writes alarms is a second writer racing the OS.
+  const runx = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=1')
+  check('a heartbeat wake arms nothing', runx.armedCalls === 0 && runx.fences.length === 0, String(runx.armedCalls))
+  check('a heartbeat wake cancels nothing', (runx.cancelledAlarms || []).length === 0, String((runx.cancelledAlarms || []).length))
+  const w = logs(runx, 'tick.wake')[0].json
+  check('tick.wake reports hb', w.hb === 1, JSON.stringify(w.hb))
+  check('tick.wake reports the table', Array.isArray(w.ids), String(w.ids))
+  check('tick.wake no longer carries chain fields', w.chain === undefined && w.chainId === undefined, '')
+  check('a heartbeat wake delivers', reqs(runx, 'poll').length === 1, String(reqs(runx, 'poll').length))
+  check('a heartbeat wake exits', runx.exits === 1, String(runx.exits))
 
-  // Disarmed: no new fence is armed, so Disarm really stops everything.
-  const off = makeWatch({ storage: fakeStorage({ relay_armed: '0' }) })
-  const st3 = await runWake(off, 'via=alarm&mode=oneshot&fence=1')
-  check('a disarmed fence is not re-armed', st3.fences.length === 0, JSON.stringify(st3.fences))
-}
-
-console.log('\nfence(repeat): the OS repeats it, so the wake must not re-arm anything')
-{
-  // The Weather-service shape, armed beside the oneshot fence. It must be inert except for
-  // the poll and the telemetry: re-arming a repeat alarm on every fire is the 0.4.23 storm.
-  const w = makeWatch()
-  w.state.pending = [900, 1001, 1002]
-  const st = await runWake(w, 'via=alarm&mode=oneshot&rfence=1')
-  check('a repeat-fence wake re-arms no oneshot fence', st.fences.length === 0, JSON.stringify(st.fences))
-  check('...and no repeat fence either', st.repeatFences.length === 0, JSON.stringify(st.repeatFences))
-  check('...and does not touch the main chain', st.armedCalls === 0, String(st.armedCalls))
-  const tel = (logs(st, 'tick.fence')[0] || {}).json || {}
-  check('tick.fence says kind:repeat', tel.kind === 'repeat', JSON.stringify(tel))
-  check('tick.fence reports the repeat_type value we sent', tel.rm === 1, JSON.stringify(tel))
-  check('a repeat-fence wake still delivers', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
-}
-
-console.log('\nheartbeat: a repeat record that fires names itself and arms nothing')
-{
-  // The one measurement that decides firmware-vs-implementation for repeat alarms.
-  const run = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=hb1')
-  const hb = (logs(run, 'tick.hb')[0] || {}).json
-  check('a heartbeat wake reports tick.hb', !!hb, JSON.stringify(hb || null))
-  check('it names which variant fired', hb && hb.hb === 'hb1', JSON.stringify(hb && hb.hb))
-  check('it reports the repeat_type and provenance', hb && hb.rm === 1 && hb.rmSrc === 'const', JSON.stringify(hb))
-  check('it does not arm anything (the OS repeats it)', run.armedCalls === 0 && run.fences.length === 0, String(run.armedCalls))
-  check('it still polls, so delivery continues', reqs(run, 'poll').length === 1, String(reqs(run, 'poll').length))
-  check('it exits', run.exits === 1, String(run.exits))
-
-  const poll = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=hb3')
-  check('every variant is distinguishable', (logs(poll, 'tick.hb')[0] || {}).json.hb === 'hb3', '')
-
-  // End of the experiment restores the working pair and leaves no experiment alarm behind.
-  const end = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hbe=1')
-  const done = (logs(end, 'tick.hbe')[0] || {}).json
-  check('the sweeper reports itself', !!done, '')
-  check('the sweeper re-arms the chain', end.armedCalls === 1, String(end.armedCalls))
-  check('the sweeper re-arms the fence', end.fences.length === 1, String(end.fences.length))
+  // A disarmed heartbeat wake must not poll, and must not touch alarms either.
+  const off = await runWake(makeWatch({ storage: fakeStorage({ relay_armed: '0' }) }), 'via=alarm&mode=oneshot&hb=1')
+  check('a disarmed heartbeat wakes without BLE work', reqs(off, 'poll').length === 0, '')
+  check('a disarmed heartbeat still exits', off.exits === 1, String(off.exits))
 }
 
 console.log('\nexit: every terminal path releases the service slot')
@@ -503,7 +482,7 @@ console.log('\ntelemetry: tick.wake is observable (defect 4)')
   const st = await runWake(w, 'via=alarm&mode=oneshot&show=0')
   const wakes = logs(st, 'tick.wake')
   check('tick.wake is sent after the handshake', wakes.length === 1, JSON.stringify(st.frames))
-  check('tick.wake carries the chain verdict', wakes.length === 1 && typeof wakes[0].json.chain === 'string', JSON.stringify(wakes))
+  check('tick.wake carries the heartbeat flag', wakes.length === 1 && wakes[0].json.hb !== undefined, JSON.stringify(wakes))
   check('tick.wake is sent with the learned side port', wakes.length === 1 && wakes[0].port2 === SIDE_PORT, wakes.length ? String(wakes[0].port2) : '-')
   check('dispatch is one poll', reqs(st, 'poll').length === 1)
 }
@@ -513,10 +492,11 @@ console.log('\ntelemetry: a wake with no link cannot report, and does not preten
   const w = makeWatch({ respondShake: false })
   const st = await runWake(w, 'via=alarm&mode=oneshot&show=0')
   check('nothing left the watch', st.frames.filter((f) => f.type === 'data').length === 0, JSON.stringify(st.frames))
-  // The handshake never settles, so the callback never runs: the wake is reaped with its
-  // buffered telemetry. The chain must still have been re-armed before BLE, or a dead
-  // link would end the tick forever.
-  check('the chain was re-armed before the link was touched', st.armedCalls === 1, String(st.armedCalls))
+  // The handshake never settles, so the callback never runs and the wake is reaped with its
+  // buffered telemetry. That is harmless only because nothing needed arming: the OS repeats
+  // the heartbeat itself, so a dead link cannot end the schedule (the reason the chain is
+  // gone). Assert the service left the alarm table completely alone.
+  check('a dead link leaves the alarm table untouched', st.armedCalls === 0 && st.fences.length === 0, String(st.armedCalls))
 }
 
 console.log('\nboot: a disarmed tick still exits without BLE work')

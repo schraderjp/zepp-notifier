@@ -984,3 +984,33 @@ Residual anomaly, noted not explained: the alarm table reports only 5 records
 absent, while the three heartbeat records and the rfence persist and fire. The oneshot fence
 does keep firing (10:48:24, 10:58:36), so it is being re-armed by its own wake rather than
 surviving as the page left it.
+
+### 0.9.13: the schedule is one heartbeat, because a chain cannot survive a missed wake
+
+The measurement above makes the architecture decision for us, and it is the one a 24/7
+reference app documents (Nieole/water-reminders ADR-0004): **one repeating alarm, armed once
+by the page, never re-set by the service.**
+
+The chain we shipped for two weeks had the property its author warns about - "the existence of
+the next reminder depends entirely on the previous wake successfully executing set()" - and it
+failed exactly that way for 5.2 h. A fence slowed the degradation to 5 min; a heartbeat removes
+it.
+
+0.9.13:
+
+* `setHeartbeatAlarm()` is the only scheduler: `repeat_type: repeatMinuteValue()` (1),
+  `repeat_period: 1`, `store: true`, `delay 60`, param `via=alarm&mode=oneshot&hb=1`.
+* `armNotifier()` cancels the table and sets that one record. It is the only alarm writer.
+* the service is **read-only with respect to alarms**: no `set()`, no `cancel()`, no re-arm.
+  The only exception is the tap carrier alarm, which is transient by design.
+* deleted: `setTickAlarm`, `armNext`, `armNextOneshot`, `forceTickAlarm`, `ensureTickAlarm`,
+  `setFenceAlarm`, `cancelFence`, `setRepeatFence`, the experiment sweep, the storm guard and
+  the `chainId`/`chain` telemetry.
+* `tick.wake` now reports `hb` and the raw `ids` table, so a leaked record is visible instead
+  of inferred; `tick.wake` losing `chain*` is the signature of this build.
+* self-healing moved fully to the page: an empty table (or a stale tick reported by the
+  phone) re-arms; a non-empty table is left alone, because the heartbeat repeats forever and a
+  second writer would mint duplicates.
+
+Trade accepted deliberately: delivery latency stays at the 60 s grid it already had, and the
+watch wakes once a minute either way - the heartbeat is not cheaper, it is *unlosable*.

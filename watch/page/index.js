@@ -39,10 +39,6 @@ import {
   BG_PERMISSION,
   ALARM_PERMISSION,
   ensureBgPermission,
-  setHeartbeat,
-  setHeartbeatEnd,
-  HEARTBEAT_VARIANTS,
-  repeatTypeInfo,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 
@@ -138,7 +134,16 @@ Page({
 
     this.refresh()
     this.probe(true)
-    this.maybeHeartbeat()
+    // Self-heal the heartbeat. The page is the only alarm writer, and an EMPTY table means
+    // the one repeating record is gone - uninstall leftovers, a cleared alarm table, or a
+    // reboot where store:true did not hold. A non-empty table is left strictly alone: the
+    // heartbeat repeats forever, so re-arming on every open would mint duplicates.
+    if (isArmed() && pendingIds().length === 0) {
+      armNotifier((r) => {
+        appendDevLog('hb self-heal ' + JSON.stringify(r).slice(0, 90))
+        this.refresh()
+      })
+    }
 
     // Ask once, on open. This is the only moment a system permission prompt can
     // appear, and everything downstream (arming, alarm delivery, start()) is
@@ -148,46 +153,6 @@ Page({
       appendDevLog('perm ' + JSON.stringify(p))
       this.refresh()
     })
-  },
-
-  maybeHeartbeat(force) {
-    // Arm the experiment. No once-per-build marker any more: the first attempt could not be
-    // repeated, so a single failure burned the test until the next flash - and we could not
-    // tell "never armed" from "armed and dropped" because nothing reported the table.
-    //
-    // Duplicates are safe by construction: an Arm press sweeps every alarm we own first, and
-    // the sweeper (hbe=1) tears the table down after 65 min. On a plain page open we only arm
-    // when only the baseline trio is present, so reopening the app does not pile records up.
-    if (!isArmed()) return
-    if (!force && this.hbArmed) return
-    const table = pendingIds()
-    // The baseline table is chain + oneshot fence + repeat fence = 3, so 3 means "nothing
-    // experimental armed yet" (measured: 0.9.11's pending after an Arm press was exactly 3).
-    if (!force && table.length > 3) {
-      appendDevLog('hb skipped: table=' + JSON.stringify(table).slice(0, 60))
-      return
-    }
-    this.hbArmed = true
-    const info = repeatTypeInfo()
-    const armed = HEARTBEAT_VARIANTS.map((v) => setHeartbeat(v))
-    const end = setHeartbeatEnd(3900)
-    const now = pendingIds()
-    const okN = armed.filter((r) => r && r.ok).length
-    // On the watch, and in the device log: what the page actually got.
-    appendDevLog('hb armed ' + okN + '/3 rm=' + info.rm + ' ' + info.src +
-      ' sweep=' + (end && end.ok ? 1 : 0) + ' table=' + JSON.stringify(now).slice(0, 70))
-    try {
-      notify({
-        title: 'HB ' + okN + '/3 armed',
-        content: 'rm=' + info.rm + ' (' + info.src + ') sweep=' + (end && end.ok ? 1 : 0) +
-          ' table=' + JSON.stringify(now).slice(0, 120),
-        actions: [],
-        vibrate: 1,
-      })
-    } catch (e) {}
-    try {
-      this.hint.setProperty(ui.prop.TEXT, ('hb: ' + okN + '/3 table ' + JSON.stringify(now)).slice(0, 46))
-    } catch (e) {}
   },
 
   refresh() {
@@ -343,7 +308,6 @@ Page({
       // accepted and then dropped looks identical to one that never fired.
       // Arm the one-off heartbeat experiment on the same press, so one action is enough
       // whether or not the page was opened while armed.
-      this.maybeHeartbeat(true)
       const armedId = result.id
       setTimeout(() => {
         const still = pendingIds().indexOf(Number(armedId)) >= 0
@@ -358,7 +322,7 @@ Page({
         } catch (e) {}
         this.refresh()
       }, 3000)
-    }, { show: !!show, mode, delaySec })
+    }, { show: !!show, delaySec })
   },
 
   cycleCadence() {
