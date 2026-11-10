@@ -451,6 +451,7 @@ function tick(param) {
       rm: rtInfo.rm,
       rmSrc: rtInfo.src,
       pending: pendingNow.length,
+    ids: pendingNow,
       api: apiLevel(),
     })
   } else if (repeatFence) {

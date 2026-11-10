@@ -879,3 +879,22 @@ Two more pitfalls of theirs that touch our design, both measured there:
 * **P-15: a notification action pointing at an `app-service` does nothing when tapped, and
   raises no error** - because the screen is on when you tap. That is a third mechanism for a
   silently lost tap; their recipe is to point actions at a page and pass the work in `param`.
+
+### 0.9.11 installed: the experiment never ran, and nothing said so
+
+Installed at ~10:43 and provably running (the wake at 10:43:54 carries `hb: 0`, a field only
+0.9.11 emits; the installed `device.zip` contains `relay_hb`, `setHeartbeat` and `tick.hb`).
+But `pending` stayed at 2 for every wake afterwards, where chain + oneshot fence + repeat
+fence + three heartbeat records + sweeper should read 7. `chainId` jumped 4556 -> 4570 across
+the Arm, so roughly a dozen `set()`/`cancel()` calls did happen.
+
+Two possible readings, indistinguishable from the relay log:
+
+1. the page never armed the records (maybeHeartbeat returned or threw before `set()`), or
+2. they were armed and the OS dropped them within ~30 s - the same accept-then-vanish
+   behaviour as 0.9.7/0.9.9.
+
+Both were invisible for the same reason: the page's only report was a `log()` line (console,
+not relay) and a once-per-build localStorage marker that also blocked retrying the test. The
+lesson generalises: any experiment armed only from the page must report what it armed, to the
+relay, or the field data cannot be read.

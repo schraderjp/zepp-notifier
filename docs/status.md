@@ -9,7 +9,16 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.11** (code 78) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.11-*.zab`).
+**0.9.12** (code 79) is **built, not installed** (`dist/10262217-Notify_Relay_0.9.12-*.zab`, file
+`10262217-Notify_Relay-0.9.12-20261110104801.zab`). 0.9.11 was installed and ran (its wake
+carries `hb: 0`), but the alarm table never grew past 2 records, so the experiment never
+executed - and the once-per-build marker meant a single miss could not be retried, while
+nothing reported what the page actually armed. 0.9.12 removes that marker (an Arm press sweeps
+first, so duplicates cannot pile up), reports the arming result in a notification and the
+device log, and makes every `tick.wake` carry the raw `ids` table so the relay can see
+exactly which records exist, one minute after any change.
+
+**0.9.11** (code 78) (`dist/10262217-Notify_Relay-0.9.11-*.zab`).
 It arms three repeating-alarm records copied from a 24/7 app (Nieole/water-reminders, measured
 on hardware: first hop 60 s, `repeat_period` = minutes, survives reboot) to settle whether our
 repeat records were malformed rather than unsupported: `hb1` their record verbatim (no
