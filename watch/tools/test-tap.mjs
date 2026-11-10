@@ -303,7 +303,8 @@ async function runWake(watch, param) {
   instantiate(join(ROOT, 'app-service/notifier.js'), stubs, [])
   if (!captured) throw new Error('notifier did not register an AppService')
 
-  captured.onInit(param)
+  if (opts.viaEvent) captured.onEvent(param)
+  else captured.onInit(param)
   // One macrotask: every await/then in this runtime settles well within it because the
   // fakes answer synchronously.
   await new Promise((resolve) => setImmediate(resolve))
@@ -427,6 +428,20 @@ console.log('\ntap: a dispatch is reported even when the reply never comes back'
   // reply from costing three hours of wakes for a press that was answered instantly.
   const capped = await runWake(makeWatch(), 'retry=1&i=18-93cebd&a=taken&ts=1&n=12')
   check('the ladder stops at 12 attempts', capped.carries.length === 0, String(capped.carries.length))
+}
+
+console.log('\nexit: only alarm wakes release the slot, never action wakes')
+{
+  // Measured 2026-11-10: the wake that answered a press reported the heartbeat still in the
+  // table and then the record never fired again; exit() is the only code left in that path.
+  // Alarm wakes (onInit) call exit() every minute harmlessly; action wakes (onEvent) must not.
+  const alarmWake = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=1')
+  check('an alarm wake still exits', alarmWake.exits === 1, String(alarmWake.exits))
+
+  const actionWake = await runWake(makeWatch({ viaEvent: true }), TAP)
+  check('an action wake does not exit', actionWake.exits === 0, String(actionWake.exits))
+  check('an action wake still answers the press', logs(actionWake, 'tap.sent').length === 1, '')
+  check('an action wake leaves a fresh heartbeat', logs(actionWake, 'tap.hb').length === 1 && logs(actionWake, 'tap.hb')[0].json.ok === 1, JSON.stringify(logs(actionWake, 'tap.hb')[0] && logs(actionWake, 'tap.hb')[0].json))
 }
 
 console.log('\na tap cannot end the schedule')

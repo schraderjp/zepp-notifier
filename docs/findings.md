@@ -1125,3 +1125,35 @@ tap path now reports `tap.table {carry, before, after}` — the carrier id it ca
 table on either side of the cancel — with one guaranteed flush. If `before` contains the
 heartbeat and `after` does not, the cancel is the killer and the fix is confirmed; if both
 contain it, the record dies later and `exit()` is back as the suspect.
+
+### Identified: `appService.exit()` from a notification-action context kills the repeating alarm
+
+`tap.table` finally separated the candidates:
+
+```
+tap.table {carry: 4641, before: [4640, 4641], after: [4640]}   <- heartbeat 4640 survived the cancel
+tap.sent   {lag: 803}
+... and then 4640 never fired again. Two minutes of silence, no tick.wake.
+```
+
+So a real carrier id, `cancelAlarm` cleared the right record, and the heartbeat was still in the
+alarm table when the wake finished its alarm work. The only code left on that path is `quit()`
+-> `appService.exit()`. Alarm wakes (`onInit`) call the same `exit()` every minute and the
+record survives; action wakes (`onEvent`) call it and the record dies. Same function, different
+hook, opposite outcome.
+
+Two earlier theories are dead by the same measurement: it was never `cancel(0)` (the id was
+4641, and 0 is now rejected anyway) and never `cancelAlarm` itself (the table proves the
+heartbeat was alive afterwards).
+
+0.9.18, both halves of the fix:
+
+* **action wakes do not call `exit()`** - they end by returning, the way every build before
+  0.9.10 did (that is the era that ran for a full day without wedging a slot);
+* **a tap leaves a fresh heartbeat behind** (`cancelAllTickAlarms()` + `setHeartbeatAlarm()`,
+  reported as `tap.hb {ok, id}`), so even if something else is also removing records, the
+  schedule ends the wake in a known state with exactly one.
+
+This is a platform behaviour worth remembering: `exit()` means "stop this service", and a
+service stopped from an action context appears to take its repeating alarm with it. Correct use
+is therefore per-hook, not per-service.

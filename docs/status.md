@@ -9,7 +9,16 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.17** (code 84) is **built, not installed**
+**0.9.18** (code 85) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.18-20261110121128.zab`). `tap.table` identified the heartbeat
+killer: `{carry: 4641, before: [4640, 4641], after: [4640]}` - a real carrier id, the right
+record cancelled, and the heartbeat still in the table when the wake finished, after which it
+never fired again. The remaining code in that path is `quit()` -> `appService.exit()`, which
+alarm wakes (`onInit`) call harmlessly every minute but which destroys the repeating record when
+called from a notification-action (`onEvent`) context. 0.9.18 stops exiting from action wakes
+and has a tap leave one freshly armed heartbeat behind (`tap.hb`).
+
+**0.9.17** (code 84)
 (`dist/10262217-Notify_Relay-0.9.17-20261110120317.zab`). 0.9.16's tap worked (`tap.sent`,
 lag 920 ms) but produced no `tap.table` and the heartbeat died again. Two causes, both mine: the
 diagnostic was queued on a branch that never flushed, and `trySet()` accepted `0` as a valid id

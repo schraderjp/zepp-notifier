@@ -100,6 +100,9 @@ const TICK_KIND = 'poll'
 
 let mb = null
 let finished = false
+// True when this context was started by a NOTIFICATION ACTION (onEvent) rather than an alarm
+// (onInit). The distinction turned out to matter: see quit().
+let fromAction = false
 
 // --- lifecycle helpers ------------------------------------------------------
 
@@ -161,6 +164,15 @@ function quit(reason) {
   // barely advancing (the alarms fired, the code never ran), and an app open clearing it.
   //
   // Guarded and namespace-imported on purpose: an absent member must not take the file down.
+  //
+  // NOT from a notification action, though. MEASURED 2026-11-10 three times, and pinned down by
+  // `tap.table`: the tap wake reported the alarm table BEFORE and AFTER its cancel as
+  // `{carry: 4641, before: [4640, 4641], after: [4640]}` - the heartbeat survived the cancel and
+  // was still in the table when the wake ended, and it never fired again. The only code left in
+  // that path is this call. So exit() from an onEvent (action) context takes the repeating alarm
+  // with it, while onInit (alarm) contexts call it every minute without harm. An action wake
+  // therefore ends the way every build before 0.9.10 did: by returning.
+  if (fromAction) return
   try {
     if (appService && typeof appService.exit === 'function') appService.exit()
   } catch (e) {}
@@ -632,6 +644,14 @@ function tap(raw) {
         } catch (e) {}
         queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
         devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
+        // Leave the schedule in a known state: exactly one heartbeat, freshly armed. The table
+        // above proves the record was alive during this wake, so whatever removed it did so
+        // afterwards; a fresh record cannot be the one that was removed.
+        try {
+          cancelAllTickAlarms()
+          const hb = setHeartbeatAlarm()
+          queueLog({ t: MSG.LOG, e: 'tap.hb', ok: hb && hb.ok ? 1 : 0, id: hb && hb.ok ? hb.id : 0 })
+        } catch (e) {}
         // One flush, always, on both branches. Twice now a diagnostic was queued on a branch
         // that never flushed, and a wake with no frames is indistinguishable from one that
         // never ran.
@@ -683,6 +703,7 @@ AppService({
 
   onEvent(param) {
     const raw = String(param || '')
+    fromAction = true
     logger.log('tick onEvent', raw)
     try {
       if (raw.indexOf('selftest') >= 0) {
