@@ -9,7 +9,15 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.12** (code 79) is **built, not installed** (`dist/10262217-Notify_Relay_0.9.12-*.zab`, file
+**0.9.12** (code 79) is **installed and the experiment is running** — and it settles the
+question this project has carried since 0.4.5: **repeat alarms work on this watch.**
+`tick.hb` fired for `hb1` (`delay 60`, `repeat_period 1`) at exactly 60 s intervals and for
+`hb2` (`repeat_period 2`, with `repeat_duration: 1`) at 120 s, with `rm: 1, rmSrc: "const"`.
+So `REPEAT_MINUTE` is 1 and `repeat_duration: 1` is harmless: neither of the long-standing
+suspects was the problem. `hb3` (`delay 600`, `repeat_period 10`) is the only shape ever tried
+before and is still pending; its first fire is due ~11:04.
+
+**0.9.12 build:** (`dist/10262217-Notify_Relay_0.9.12-*.zab`, file
 `10262217-Notify_Relay-0.9.12-20261110104801.zab`). 0.9.11 was installed and ran (its wake
 carries `hb: 0`), but the alarm table never grew past 2 records, so the experiment never
 executed - and the once-per-build marker meant a single miss could not be retried, while

@@ -920,3 +920,41 @@ start it. A once-per-build marker made that unrecoverable without a flash.
 0.9.12 removes the marker entirely, forces a re-arm from the Arm callback (after the sweep),
 and only uses the table heuristic on a plain page open, with the baseline trio (3) treated as
 "nothing armed yet" - which is what the measurement showed the baseline to be.
+
+### MEASURED: repeat alarms do fire here — the 0.9.7/0.9.9 conclusions were wrong
+
+0.9.12, armed at 10:54 on 2026-11-10. `events.jsonl`:
+
+| tag | shape | fires | gaps |
+|---|---|---|---|
+| `hb1` | `delay 60`, `repeat_period 1`, no `repeat_duration` | 3 | **60, 60 s** |
+| `hb2` | `delay 60`, `repeat_period 2`, `repeat_duration: 1` | 2 | **120 s** |
+| `hb3` | `delay 600`, `repeat_period 10` | pending | due ~11:04 |
+| oneshot chain | 60 s, re-armed each wake | every 60 s | unchanged |
+
+`tick.hb` carried `rm: 1, rmSrc: "const"`, so `alarmMgr.REPEAT_MINUTE` **is** 1 at this API
+level - the fallback was never wrong, and the "wrong constant" hypothesis is closed with a
+runtime reading rather than an inference.
+
+`hb2` fires with `repeat_duration: 1`, so that field is **not** what killed 0.9.7/0.9.9 either.
+Both of the suspects this project has carried since 0.4.5 are therefore eliminated, on the
+device, by measurement:
+
+* repeat alarms are not unsupported on this firmware;
+* the constant is 1;
+* `repeat_duration: 1` is accepted and repeats.
+
+What remains different about the earlier failures is the **period/delay pair** (`600`/`10`,
+the only shape ever tried until now) - `hb3` is exactly that pair and is still pending, so it
+either fires at ~11:04 or isolates the failure to a long period. `repeat_period: 1` and `2`
+are both proven to work at 60 s/120 s.
+
+**Consequence for the design, not just the diagnosis**: `repeat_period: 1` gives exactly the
+60 s cadence the oneshot chain provides, from a single record the OS repeats forever. The
+chain - and with it the "one missed delivery ends the night" failure mode that produced the
+5.2 h silence, plus the fence, the re-arm code, the storm guard and the chainId diagnostic -
+can be replaced by one `set()` the page makes once.
+
+Note also the trap that wasted the 0.9.11 test: `forceTickAlarm()` cancels every alarm the app
+owns, so anything a page armed *before* an Arm press is swept by that press. Anything armed
+alongside must be armed *after* the sweep, in the same callback.
