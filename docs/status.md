@@ -9,7 +9,17 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.15** (code 82) is **built, not installed**
+**0.9.16** (code 83) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.16-20261110115615.zab`). 0.9.15 produced **no tap telemetry at
+all**, which 0.9.14 had produced reliably. The one thing 0.9.14 changed on that path was the
+order: it flushed the log frames *after* dispatching the ack request, so a synchronous failure
+inside `requestOnce` reaches `quit()` -> `exit()` before anything is flushed. 0.9.16 restores
+the ordering that is known to work (frames first, request second) and moves the new
+`pendingIds()`/`setHeartbeatAlarm()` diagnostics behind the flush and inside a try/catch, so no
+diagnostic can cost the tap. Verified in the built bundle: `tap.table`, `tap.rearm`,
+`tap.ack-sent`, `tap.sent` and `hb=1` are all present in `app-service/notifier.bin`.
+
+**0.9.15** (code 82)
 (`dist/10262217-Notify_Relay-0.9.15-20261110114832.zab`). 0.9.14 fixed the tap receipt
 (`tap.sent lag 660 ms` on the first try), but that first successful tap was followed within
 five seconds by the heartbeat record vanishing: four minutes of complete silence until the page

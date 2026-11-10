@@ -588,6 +588,13 @@ function tap(raw) {
     // is how tap.received itself gets here); the reply to the request does not, and its
     // absence used to look identical to "the press was never answered".
     queueLog({ t: MSG.LOG, e: 'tap.ack-sent', i, a, try: attempt, ts })
+    // FLUSH BEFORE THE REQUEST. 0.9.14 moved this after sendAck so the entry would describe a
+    // completed dispatch, and 0.9.15 then produced no tap telemetry at all - the one thing this
+    // path had always done reliably was get its Notify frames out before the ack Request. If
+    // the request throws, requestOnce calls back synchronously, which reaches quit() and exits
+    // the context before any flush could run. Order it the way that is known to work: log
+    // frames first, request second.
+    flushLogs()
     sendAck(i, a, ts, (sent) => {
       if (sent) {
         // Answered: stop the retry chain. If the cancel itself fails the alarm fires once
@@ -595,30 +602,29 @@ function tap(raw) {
         if (carry && carry.ok) cancelAlarm(carry.id)
         queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
         devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
-
-        // MEASURED 2026-11-10 11:41:51: the first tap to reach this branch since 08:52 - the
-        // one 0.9.14 finally made possible - was followed within five seconds by the heartbeat
-        // record (4631) vanishing from the OS table. No wake fired for four minutes until the
-        // page was opened and self-healed. Whether our cancel, the exit() a few lines below, or
-        // the OS itself did it is not knowable from the relay log, so do both things that are
-        // correct regardless: record the table here, and put the heartbeat back if it is gone.
-        // A tap answering a notification must never be able to end the schedule.
-        let table = []
+        // Flush the outcome BEFORE touching the alarm API: 0.9.15 did the reverse and produced
+        // no tap telemetry at all, and this context is on a 600 ms budget - the frames go out
+        // first, everything optional after.
+        flushLogs()
+        // MEASURED 2026-11-10 11:41:51: the first tap to reach this branch was followed within
+        // five seconds by the heartbeat record vanishing, and four minutes of silence until the
+        // page was opened. Whether cancelAlarm, exit() or the OS did it is unknown, so record
+        // what is left and restore the heartbeat if it is gone. Everything here is guarded: no
+        // diagnostic may cost the tap itself.
         try {
-          table = pendingIds()
+          const table = pendingIds()
+          queueLog({ t: MSG.LOG, e: 'tap.table', i, a, ids: table })
+          if (!table.length) {
+            const hb = setHeartbeatAlarm()
+            queueLog({ t: MSG.LOG, e: 'tap.rearm', ok: hb && hb.ok ? 1 : 0 })
+            flushLogs()
+          }
         } catch (e) {}
-        queueLog({ t: MSG.LOG, e: 'tap.table', i, a, ids: table })
-        if (!table.length) {
-          // Read-only rule kept: this is not a cadence write, it is restoring the one record the
-          // page is supposed to own after something removed it.
-          const hb = setHeartbeatAlarm()
-          queueLog({ t: MSG.LOG, e: 'tap.rearm', ok: hb && hb.ok ? 1 : 0 })
-        }
+      } else {
+        flushLogs()
       }
-      flushLogs()
       quit(sent ? 'tap' : 'tap-unacked')
     })
-    flushLogs()
   })
 }
 

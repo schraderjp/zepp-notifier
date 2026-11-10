@@ -1087,3 +1087,19 @@ Whatever the cause, two things are now true in 0.9.15 and neither depends on kno
 
 If `tap.table` shows `ids: [4631]` in the next build, the record survived the tap and the
 disappearance is later or external; if it shows `[]`, our own wake removed it.
+
+### Ordering rule for a 600 ms wake: frames out before anything optional
+
+0.9.15 silenced the tap path completely - no `tap.received`, no `tap.ack-sent`, nothing at the
+relay - where 0.9.14 had reported taps reliably. The change responsible was an ordering one I
+made for tidiness: `flushLogs()` was moved from before `sendAck(...)` to after it, so the
+`tap.ack-sent` entry could describe a completed dispatch.
+
+`requestOnce` settles **synchronously** when `sendJson` throws (`finish(null)` straight into the
+callback), and that callback ends in `quit()` -> `appService.exit()`. So with the flush placed
+after the request, a failing send can reach `exit()` before a single frame is flushed, and the
+wake leaves no trace anywhere - indistinguishable from "the alarm never fired".
+
+Rule, now written into the code: on this platform a wake has ~600 ms and no timers, so **the
+log/beacon frames go out before any request, and any alarm-API work goes after the flush inside
+a try/catch**. A diagnostic must never be able to cost the thing it is diagnosing.
