@@ -1157,3 +1157,28 @@ heartbeat was alive afterwards).
 This is a platform behaviour worth remembering: `exit()` means "stop this service", and a
 service stopped from an action context appears to take its repeating alarm with it. Correct use
 is therefore per-hook, not per-service.
+
+### A press can be routed to the page, and the page was dropping it
+
+0.9.18, installed 12:14:39: the notification rendered at 12:15:57 and a press produced **no
+telemetry at all** - not even `tap.received`, which is queued before any BLE work. The service
+hook was unchanged from 0.9.17, where the same press produced a complete trace at 12:08:53.
+The only difference in conditions: the app had been opened 78 seconds earlier.
+
+Both reference docs warn about exactly this. `nieole/water-reminders` P-15: a notification
+action that targets an `app-service` **can do nothing at all, with no error** - their recipe is
+to point actions at a page and carry the work in `param`. Their P-18 adds that alarm-driven
+services do not run at all while the page is in the foreground. So an action arriving while the
+mini program is resident is plausibly delivered to the **page**, not the service - and
+`page/index.js` had no `onInit(param)` at all, so the press landed on a page that ignored it.
+
+0.9.19 makes the page a second answering path:
+
+* `onInit(param)` records the launch parameter and logs it (`page param ...` in the device log);
+* `handleLaunchTap()` decodes `i=`/`a=` and sends `MSG.ACK` over the same MessageBuilder the
+  probe uses, so the side records the answer at the relay. No carrier alarm is cancelled there,
+  because on this path the service never ran and none was armed.
+
+Note this is the fifth distinct mechanism found for a silently lost press: no link, the
+side-down case, the reply-leg loss, `exit()` from an action context, and now the action being
+routed to the page. Each needed different evidence to see.

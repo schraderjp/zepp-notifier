@@ -18,6 +18,7 @@ import * as ui from '@zos/ui'
 import { push } from '@zos/router'
 import { notify } from '@zos/notification'
 import { getPackageInfo } from '@zos/app'
+import { MSG, decodeActionParam } from '../shared/protocol'
 import * as ble from '@zos/ble'
 import * as appServiceMgr from '@zos/app-service'
 import { log } from '@zos/utils'
@@ -55,6 +56,60 @@ const MARGIN = 20
 const CONTENT_W = W - 2 * MARGIN
 
 Page({
+  // MEASURED 2026-11-10 12:16: a notification action produced NO telemetry at all on a build
+  // whose service hook was unchanged - the one difference from the taps that worked was that the
+  // app had been opened a minute earlier. If the OS routes an action to the running PAGE instead
+  // of the App Service (docs: file-writing actions must point at a page; an action that targets an
+  // app-service can do nothing at all), the param lands here and used to be dropped on the floor.
+  // So: accept it, report it, and answer it from the page - the page has the same BLE builder the
+  // probe uses.
+  onInit(param) {
+    this.launchParam = String(param || '')
+    if (this.launchParam) appendDevLog('page param ' + this.launchParam.slice(0, 44))
+  },
+
+  // Answer a press that was routed to the page rather than to the service.
+  //
+  // Same shape as probe(): one MessageBuilder request over BLE. The side handles MSG.ACK on its
+  // request path and records the answer at the relay, so the press is durable even if this page
+  // dies straight afterwards. No carrier alarm is cancelled here because none was armed - that is
+  // the service path's job, and this is the path where the service never ran.
+  handleLaunchTap() {
+    const raw = this.launchParam || ''
+    if (raw.indexOf('i=') < 0) return
+    const { i, a } = decodeActionParam(raw)
+    appendDevLog('page tap ' + i + '/' + a)
+    if (!i) return
+    let mb = null
+    try {
+      mb = new MessageBuilder({
+        appId: getPackageInfo().appId,
+        appDevicePort: 20,
+        appSidePort: 0,
+        ble,
+      })
+      mb.connect()
+    } catch (e) {
+      appendDevLog('page tap construct fail ' + e)
+      return
+    }
+    mb.request({ t: MSG.ACK, i, a, ts: Date.now() }, { timeout: 6000 })
+      .then(() => {
+        appendDevLog('page tap ok ' + i)
+        try {
+          this.hint.setProperty(ui.prop.TEXT, ('answered from the app: ' + a).slice(0, 46))
+        } catch (e) {}
+      })
+      .catch((err) => {
+        appendDevLog('page tap fail ' + ((err && (err.reason || err.message)) || err))
+      })
+      .finally(() => {
+        try {
+          mb.disConnect()
+        } catch (e) {}
+      })
+  },
+
   build() {
     try {
       if (typeof ui.setStatusBarVisible === 'function') ui.setStatusBarVisible(false)
@@ -135,6 +190,7 @@ Page({
 
     this.refresh()
     this.probe(true)
+    this.handleLaunchTap()
     // Self-heal the heartbeat. The page is the only alarm writer, and an EMPTY table means
     // the one repeating record is gone - uninstall leftovers, a cleared alarm table, or a
     // reboot where store:true did not hold. A non-empty table is left strictly alone: the

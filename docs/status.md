@@ -9,7 +9,16 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.18** (code 85) is **built, not installed**
+**0.9.19** (code 86) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.19-20261110121738.zab`). On 0.9.18 a press produced no telemetry
+at all where 0.9.17 had produced a full trace, with the only changed condition being that the app
+had been opened 78 s earlier. That fits the reference docs' warning that an action targeting an
+app-service can silently do nothing, and that a page in the foreground suppresses alarm-driven
+services: the action was probably delivered to the **page**, which had no `onInit(param)` and
+dropped it. 0.9.19 adds `page param` logging and answers `i=`/`a=` from the page over the same
+BLE builder the probe uses.
+
+**0.9.18** (code 85)
 (`dist/10262217-Notify_Relay-0.9.18-20261110121128.zab`). `tap.table` identified the heartbeat
 killer: `{carry: 4641, before: [4640, 4641], after: [4640]}` - a real carrier id, the right
 record cancelled, and the heartbeat still in the table when the wake finished, after which it

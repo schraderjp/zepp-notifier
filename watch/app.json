@@ -5,8 +5,8 @@
     "appName": "Notify Relay",
     "appType": "app",
     "version": {
-      "code": 85,
-      "name": "0.9.18"
+      "code": 86,
+      "name": "0.9.19"
     },
     "icon": "icon.png",
     "vender": "personal",
