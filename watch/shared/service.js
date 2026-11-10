@@ -19,7 +19,7 @@ import {
   ensureTickAlarm,
   forceTickAlarm,
   setFenceAlarm,
-  FENCE_PERIOD_MIN,
+  FENCE_PERIOD_SEC,
   cancelAllTickAlarms,
   pendingIds,
   armedIds,
@@ -46,7 +46,7 @@ export {
   ensureTickAlarm,
   forceTickAlarm,
   setFenceAlarm,
-  FENCE_PERIOD_MIN,
+  FENCE_PERIOD_SEC,
 }
 
 export const ARMED_KEY = 'relay_armed'

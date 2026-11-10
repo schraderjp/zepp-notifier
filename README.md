@@ -107,10 +107,12 @@ If the watch sits with the screen off for hours (overnight), alarm delivery can 
 entirely — measured at 5.2 h on a watch that was **worn and awake**, so it is not
 the sleep-mode setting. Two provisions: opening **Notify Relay** re-arms the chain by
 itself when the phone reports the last tick is old or never (0.9.6+), and an
-independent **fence** alarm repeats every 10 min (0.9.7+) so a single missed delivery
-cannot end the chain. `tick.fence` with no `tick.wake` means the platform is still
-delivering alarms and the chain's own arming stopped; neither event means delivery
-itself stops, and only an app open recovers that.
+independent **fence** chain runs every 5 min (0.9.8+) so one missed delivery costs
+latency instead of the night. The fence is a oneshot chain, not a repeating alarm:
+measured, a repeat record is accepted, listed pending and **never fires** on this
+firmware. `tick.fence` with `pending: 1` and no `tick.wake` means the main chain
+stopped while delivery still works; neither event means delivery itself stops, and
+only an app open recovers that.
 
 ## Run the relay
 

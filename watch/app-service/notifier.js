@@ -44,7 +44,15 @@ import { cancel, notify } from '@zos/notification'
 import { localStorage } from '@zos/storage'
 import { log } from '@zos/utils'
 import { MSG, decodeActionParam, encodeActionParam, normalizeNotification } from '../shared/protocol'
-import { armNext, armNextOneshot, pendingIds, cancelAllTickAlarms, setCarryAlarm, cancelAlarm } from '../shared/alarm'
+import {
+  armNext,
+  armNextOneshot,
+  pendingIds,
+  cancelAllTickAlarms,
+  setCarryAlarm,
+  cancelAlarm,
+  setFenceAlarm,
+} from '../shared/alarm'
 // NO `@zos/app-service` IMPORT. Measured: 0.4.3 (no such import) executed and
 // rendered; 0.4.5-0.4.11 (with it) never executed once. Importing the module that
 // manages app services into an app service is a load-time failure here, which
@@ -391,24 +399,24 @@ function tick(param) {
   // The chain continues in the mode it was started in. A oneshot chain is the
   // safe one: `delay` only, no repeat_* fields, so it cannot express a storm.
   const oneshot = raw.indexOf('mode=oneshot') >= 0
-  // The fence is the OS's own REPEATING alarm (alarm.js setFenceAlarm). It exists to
-  // survive a missed chain delivery, so it must never re-arm itself and must not add a
-  // chain alarm while one is still pending - pendingIds() lists every alarm this app
-  // owns, and the fence is always one of them, so >= 2 means the chain is still armed.
+  // The fence is the second, independent oneshot chain (alarm.js setFenceAlarm): it exists
+  // so that a missed delivery of the MAIN chain's next alarm slows delivery to five minutes
+  // instead of stopping it. It re-arms only itself - never the main chain - because pending
+  // alarms come back as bare ids, so "is the main chain alive" is not answerable from here,
+  // and a wrong guess adds an alarm permanently (N pending -> N wakes a minute).
   const fence = raw.indexOf('fence=1') >= 0
   let chain = null
+  let armF = null
   if (fence) {
-    const chainAlive = pendingNow.length >= 2
-    if (armed && !chainAlive) chain = armNextOneshot(false)
-    // The point of the telemetry: a fence that fires while the chain does not says the
-    // platform is still delivering alarms and the chain's own arming is what stopped.
+    if (armed) armF = setFenceAlarm()
+    // `pending` is the diagnostic: 2 means the main chain's next alarm is still in the
+    // table beside this fence, 1 means this wake is alone - the main chain died and the
+    // fence is now carrying the whole cadence.
     queueLog({
       t: MSG.LOG,
       e: 'tick.fence',
       pending: pendingNow.length,
-      alive: chainAlive ? 1 : 0,
-      revived: chain && chain.ok ? 1 : 0,
-      chain: chainVerdict(chain),
+      fenceOk: armF && armF.ok ? 1 : 0,
     })
   } else if (armed && viaAlarm) {
     // No prune here. Cancelling "extra" alarms cancels the one whose wake is in

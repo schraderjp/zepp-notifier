@@ -9,17 +9,22 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.7** (code 74) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.7-*.zab`).
-0.9.6 is superseded by it; both carry the self-re-arming page and the duplicate-instance
-report, and 0.9.7 adds the **fence**.
+**0.9.8** (code 75) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.8-*.zab`).
 
-The fence is a REPEATING alarm (`repeat_period: 10`, `store: true`, param `fence=1`) armed
-with every Arm press, independent of the oneshot chain. It never re-arms itself and never
-adds a chain alarm while one is still pending. It exists because the chain is one alarm
-deep: a single missed delivery ends it until something re-arms. A `tick.fence` event while
-`tick.wake` is absent means the platform is still delivering alarms and the chain's arming
-is what stopped; if neither fires overnight, delivery itself stops and no in-app change can
-help — that is the outcome that would make "open the app in the morning" the design.
+0.9.7's fence was a **repeating** alarm and it never fired once: 32 minutes armed,
+`tick.fence` 0, while `getAllAlarms()` listed it as pending the whole time and the main
+chain woke every 60 s. Measured, and consistent with this repo's earlier note that repeat
+shapes fire "once from delay and then never again". A repeating alarm is a dead end on this
+firmware.
+
+0.9.8 replaces it with a second **oneshot** chain, five minutes out, with its own
+self-re-arm and **no** attempt to revive the main chain (`getAllAlarms()` returns bare ids,
+so "is the chain alive" is unanswerable from a wake, and a wrong guess adds an alarm for
+good). If the main chain stops, delivery continues at 5-minute latency and `tick.fence`
+with `pending: 1` and no `tick.wake` names it.
+
+Also on the wrist from 0.9.6/0.9.7 and still relevant: the page re-arms itself when the
+phone reports a silent chain, and the side reports `side.duplicate`.
 
 **0.9.6** (code 73) changes:
 Three changes, all aimed at the "it stops talking for hours" report:

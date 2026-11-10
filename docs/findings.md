@@ -744,3 +744,24 @@ After a night like that, **raise/tap the watch once before opening the app** and
   page has to re-arm;
 * `tick.fence` appears but `tick.wake` does not -> the chain's arming is the problem, not the
   platform's delivery.
+
+### A repeating alarm is accepted, listed pending, and never fires (measured)
+
+0.9.7's fence was a repeat alarm: `{repeat_type: REPEAT_MINUTE, repeat_period: 10,
+repeat_duration: 1, store: true, delay: 600}`. Thirty-two minutes after it was armed:
+`tick.fence` count **0**, while the main chain woke every 60 s. `pendingIds()` reported 2 at
+most wakes and 1 at others, i.e. the repeat record sat in the OS table the entire time and was
+never delivered — not once, including its first `delay`.
+
+That is the same class as the two failures this file already records: repeat shapes only
+firing "once from delay and then never again", and records the OS "accepts and returns an id
+for, then never schedules". The lesson generalises: **on this firmware an alarm must be a
+plain oneshot** — the only shape with 1440 deliveries a day behind it.
+
+0.9.8 therefore makes the fence a second oneshot chain, five minutes out, with its own
+self-re-arm. It deliberately does **not** try to revive the main chain: `getAllAlarms()`
+returns bare ids, the fence is always one of them, so "is a chain alarm still pending" is not
+answerable from inside a wake, and guessing wrong adds an alarm permanently (N pending alarms
+produce N wakes a minute, each arming one more). What it does instead is degrade: if the main
+chain stops, delivery continues at 5-minute latency, and `tick.fence` with `pending: 1` and no
+`tick.wake` beside it is the measurement that says the main chain died while delivery works.

@@ -485,34 +485,37 @@ export function cancelAlarm(id) {
 
 // --- the fence ---------------------------------------------------------------
 //
-// A REPEATING alarm owned by the OS, independent of the oneshot chain, so it cannot be
-// "the alarm that was not delivered next". Two reasons it exists:
+// A SECOND, independent oneshot chain, five minutes out, whose only job is to keep waking
+// the service when the main chain's next alarm was never delivered.
 //
-//   1. Robustness. 2026-11-10 measured 5.2 h with nothing fired at all while the watch was
-//      WORN (chainId advanced 5 instead of ~624, and those 5 came from the app-open re-arm).
-//      A single-alarm chain dies the moment one delivery is missed; the fence re-enters
-//      from outside that chain.
-//   2. Diagnosis. If the fence fires while the chain does not, the platform is still
-//      delivering alarms and the chain's own arming is what stopped. If neither fires, alarm
-//      delivery itself stops - and no in-app change can fix that.
+// It is deliberately NOT a repeating alarm. 0.9.7 shipped one (`repeat_period: 10`,
+// `store: true`) and measured it on 2026-11-10: the record was accepted, `getAllAlarms()`
+// listed it as pending for 32 minutes, and it never fired once - `tick.fence` stayed at
+// zero while the main chain woke every 60 s. That matches what this file already knew about
+// repeat shapes ("the shape that reliably fired once: no window", "a repeat alarm fired once
+// from delay and then never again"): on this firmware a repeat record is a pending entry
+// that is never delivered. So the fence uses the shape with 1440 deliveries a day behind it:
+// a plain oneshot, equipped with its own self-re-arming chain.
 //
-// It must NEVER re-arm itself: the OS repeats it. Re-arming a repeat alarm on every wake is
-// exactly the 0.4.23 storm shape, so the param carries `fence=1` and the tick refuses to arm
-// a repeat alarm from that path.
-export const FENCE_PERIOD_MIN = 10
+// It does not try to revive the main chain. That would need to know whether a chain alarm is
+// still pending, and `getAllAlarms()` returns bare ids: with the fence itself always present
+// the count cannot distinguish "main chain alive" from "this is my own record", and guessing
+// wrong ADDS a permanent alarm every fence period (N pending alarms produce N wakes a minute,
+// each arming one more). So the fence only ever re-arms itself: it degrades delivery to a
+// 5-minute cadence instead of stopping it, and a `tick.fence` with no `tick.wake` beside it
+// is the measurement that says the main chain died while delivery still works.
+export const FENCE_PERIOD_SEC = 300
 
-export function setFenceAlarm(periodMin) {
-  const period = Math.max(2, Math.min(30, Math.floor(Number(periodMin) || FENCE_PERIOD_MIN)))
+export function setFenceAlarm(delaySec) {
+  const delay = clampDelay(Number(delaySec) || FENCE_PERIOD_SEC)
   const result = trySet({
     url: NOTIFIER_SERVICE,
     param: 'via=alarm&mode=oneshot&fence=1',
-    repeat_type: repeatMinuteValue(),
-    repeat_period: period,
-    repeat_duration: 1,
     store: STORE,
-    delay: 60 * period,
+    delay: delay,
   })
   if (result.ok) rememberId(result.id)
+  result.delaySec = delay
   return result
 }
 
