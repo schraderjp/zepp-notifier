@@ -483,6 +483,45 @@ export function cancelAlarm(id) {
   return true
 }
 
+// --- the fence ---------------------------------------------------------------
+//
+// A REPEATING alarm owned by the OS, independent of the oneshot chain, so it cannot be
+// "the alarm that was not delivered next". Two reasons it exists:
+//
+//   1. Robustness. 2026-11-10 measured 5.2 h with nothing fired at all while the watch was
+//      WORN (chainId advanced 5 instead of ~624, and those 5 came from the app-open re-arm).
+//      A single-alarm chain dies the moment one delivery is missed; the fence re-enters
+//      from outside that chain.
+//   2. Diagnosis. If the fence fires while the chain does not, the platform is still
+//      delivering alarms and the chain's own arming is what stopped. If neither fires, alarm
+//      delivery itself stops - and no in-app change can fix that.
+//
+// It must NEVER re-arm itself: the OS repeats it. Re-arming a repeat alarm on every wake is
+// exactly the 0.4.23 storm shape, so the param carries `fence=1` and the tick refuses to arm
+// a repeat alarm from that path.
+export const FENCE_PERIOD_MIN = 10
+
+export function setFenceAlarm(periodMin) {
+  const period = Math.max(2, Math.min(30, Math.floor(Number(periodMin) || FENCE_PERIOD_MIN)))
+  const result = trySet({
+    url: NOTIFIER_SERVICE,
+    param: 'via=alarm&mode=oneshot&fence=1',
+    repeat_type: repeatMinuteValue(),
+    repeat_period: period,
+    repeat_duration: 1,
+    store: STORE,
+    delay: 60 * period,
+  })
+  if (result.ok) rememberId(result.id)
+  return result
+}
+
+export function cancelFence() {
+  // Ids are opaque, so "cancel the fence" means cancel everything we own - the same sweep
+  // Disarm performs. Callers use it only when the whole chain is being torn down.
+  return cancelAllTickAlarms()
+}
+
 // --- diagnostics ------------------------------------------------------------
 
 export function alarmDump() {

@@ -18,6 +18,8 @@ import {
   CADENCE_STEPS,
   ensureTickAlarm,
   forceTickAlarm,
+  setFenceAlarm,
+  FENCE_PERIOD_MIN,
   cancelAllTickAlarms,
   pendingIds,
   armedIds,
@@ -43,6 +45,8 @@ export {
   ourIds,
   ensureTickAlarm,
   forceTickAlarm,
+  setFenceAlarm,
+  FENCE_PERIOD_MIN,
 }
 
 export const ARMED_KEY = 'relay_armed'
@@ -144,6 +148,10 @@ export function armNotifier(cb, options) {
     // not make this a no-op.
     const result = forceTickAlarm(options)
     result.perm = perm
+    // The fence is re-armed with every Arm press because forceTickAlarm() swept every
+    // alarm we own (including the previous fence). One repeating alarm, never re-armed by
+    // the tick: see setFenceAlarm().
+    result.fence = setFenceAlarm()
     if (cb) cb(result)
   })
 }

@@ -103,10 +103,14 @@ settings → Apps → Zepp → Force stop) and reopen it. Since 0.9.6 the side a
 reports `side.duplicate` when it sees another instance's marker, so the condition
 is visible instead of being guessed at.
 
-If the watch has been asleep (overnight, or off the wrist), the OS freezes the
-alarm chain and no wake happens until something re-arms it. Opening **Notify
-Relay** is enough from 0.9.6: the page asks the phone when it last heard from the
-tick and re-arms itself when the answer is "never" or "hours ago".
+If the watch sits with the screen off for hours (overnight), alarm delivery can stop
+entirely — measured at 5.2 h on a watch that was **worn and awake**, so it is not
+the sleep-mode setting. Two provisions: opening **Notify Relay** re-arms the chain by
+itself when the phone reports the last tick is old or never (0.9.6+), and an
+independent **fence** alarm repeats every 10 min (0.9.7+) so a single missed delivery
+cannot end the chain. `tick.fence` with no `tick.wake` means the platform is still
+delivering alarms and the chain's own arming stopped; neither event means delivery
+itself stops, and only an app open recovers that.
 
 ## Run the relay
 

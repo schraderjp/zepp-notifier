@@ -391,8 +391,26 @@ function tick(param) {
   // The chain continues in the mode it was started in. A oneshot chain is the
   // safe one: `delay` only, no repeat_* fields, so it cannot express a storm.
   const oneshot = raw.indexOf('mode=oneshot') >= 0
+  // The fence is the OS's own REPEATING alarm (alarm.js setFenceAlarm). It exists to
+  // survive a missed chain delivery, so it must never re-arm itself and must not add a
+  // chain alarm while one is still pending - pendingIds() lists every alarm this app
+  // owns, and the fence is always one of them, so >= 2 means the chain is still armed.
+  const fence = raw.indexOf('fence=1') >= 0
   let chain = null
-  if (armed && viaAlarm) {
+  if (fence) {
+    const chainAlive = pendingNow.length >= 2
+    if (armed && !chainAlive) chain = armNextOneshot(false)
+    // The point of the telemetry: a fence that fires while the chain does not says the
+    // platform is still delivering alarms and the chain's own arming is what stopped.
+    queueLog({
+      t: MSG.LOG,
+      e: 'tick.fence',
+      pending: pendingNow.length,
+      alive: chainAlive ? 1 : 0,
+      revived: chain && chain.ok ? 1 : 0,
+      chain: chainVerdict(chain),
+    })
+  } else if (armed && viaAlarm) {
     // No prune here. Cancelling "extra" alarms cancels the one whose wake is in
     // progress (the alarm being fired is still listed as pending during its own
     // wake), which is the documented way to wedge the scheduler. Growth is
@@ -454,6 +472,8 @@ function tick(param) {
     ble: st,
     conn: connected,
     // Readable in the server trace, which beats squinting at the watch.
+    fence: fence ? 1 : 0,
+    pending: pendingNow.length,
     chain: chainVerdict(chain),
     chainId: chain && chain.id !== undefined ? chain.id : -1,
     chainErr: chain && !chain.ok ? String(chain.reason || chain.skipped || '').slice(0, 80) : '',

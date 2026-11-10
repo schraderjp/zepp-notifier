@@ -687,9 +687,26 @@ Overnight window, 03:40 → 08:52 (5.2 h):
 | after the phone woke, 11.4 min of `cache.refresh` with still no device request | the phone was ready and the watch was still dead — so opening the Zepp app cannot be what fixes this |
 | the tick came back 34 s after the app was installed/opened (page probe, side restart, then `tick.wake` chainId 4342) | an app open re-armed it. `app.js` auto-arm **skips when an alarm is listed pending**, and a frozen alarm still is — so opening the app alone did nothing, and pressing Arm did |
 
-So: the OS freezes the alarm chain when the watch sleeps (off the wrist overnight), and the
-only recovery was a force re-arm. That is a platform property, not a bug in the chain — but
-requiring the user to press Arm after every sleep is.
+**Correction, same day:** the watch was **worn all night and not in sleep mode**, so
+"sleep mode freezes the chain" is not the explanation. What the log actually supports is
+narrower and worse: the alarm armed at 03:40:11 with `delay: 60, store: true` was never
+delivered for 5.2 h, and nothing fired in between (the +5 chainId is the app-open re-arm,
+not wakes). It is not the link (a failed shake still arms and would advance chainId), not
+the phone (it was only dozing, and it was ready for 11 min before the watch came back), and
+not disarming (a fresh context reads `relay_armed` as unset, which counts as armed).
+
+So: **alarm delivery itself stopped for a worn watch in long screen-off** — the user-level
+"sleep mode" setting is not the variable. Two things follow:
+
+* an app open must be enough to recover (0.9.6 makes the page re-arm itself from the
+  phone's view of the silence), and
+* a chain that is exactly one alarm deep dies on the first missed delivery, so it now has a
+  fence: `setFenceAlarm()` installs a REPEATING alarm (`repeat_period: 10`, `store: true`,
+  param `fence=1`) that never re-arms itself and never adds a chain alarm while one is still
+  pending. It either revives a dead chain within 10 min, or its `tick.fence` event proves the
+  platform is still delivering alarms while the chain's own arming is what stopped. If neither
+  the fence nor the chain fires overnight, delivery itself stops and no in-app change can fix
+  it — that is the one outcome that would make "open the app in the morning" the design.
 
 Three changes (0.9.6):
 
@@ -715,3 +732,15 @@ jq -r 'select(.event=="cache.refresh") | .requests' events.jsonl | tail -5   # t
 
 * chainId advanced with the gap → the wake ran and the **link/phone** failed.
 * chainId barely advanced → the **watch** never woke: sleep mode, dead alarm, or disarmed.
+
+### The one experiment left for this failure
+
+After a night like that, **raise/tap the watch once before opening the app** and watch for a
+`tick.wake` within ~2 min:
+
+* it resumes -> a past-due oneshot is delivered when the device wakes, so the chain heals
+  itself on first touch and the 0.9.6 self-re-arm is only a safety net;
+* it stays dead until the app is opened -> a past-due oneshot is dropped, which is why the
+  page has to re-arm;
+* `tick.fence` appears but `tick.wake` does not -> the chain's arming is the problem, not the
+  platform's delivery.

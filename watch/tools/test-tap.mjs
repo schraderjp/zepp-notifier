@@ -122,6 +122,7 @@ function makeWatch(options = {}) {
     devlog: [],
     inbound: null,
     armedCalls: 0,
+    pending: [], // what getAllAlarms() reports: fence + any live chain alarm
     carries: [], // setCarryAlarm() calls
     cancelledAlarms: [], // cancelAlarm() calls
     nextAlarmId: 500,
@@ -242,10 +243,13 @@ async function runWake(watch, param) {
       },
       armNextOneshot: () => {
         state.armedCalls++
-        return { ok: true, id: 1, shape: 'oneshot' }
+        state.pending.push(1000 + state.armedCalls) // one chain alarm, consumed when it fires
+        return { ok: true, id: 1000 + state.armedCalls, shape: 'url-delay' }
       },
-      pendingIds: () => [],
-      cancelAllTickAlarms: () => {},
+      pendingIds: () => state.pending.slice(),
+      cancelAllTickAlarms: () => {
+        state.pending = []
+      },
       setCarryAlarm: (p, delay) => {
         const entry = { param: p, delaySec: delay, id: state.nextAlarmId++ }
         state.carries.push(entry)
@@ -371,6 +375,30 @@ console.log('\ntap: an unparseable press is still visible')
   check('tap-no-id reaches the relay on the same wake', logs(st, 'tap-no-id').length === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
   check('tap-no-id sends no ack', reqs(st, 'a').length === 0)
   check('tap-no-id arms no retry', st.carries.length === 0, JSON.stringify(st.carries))
+}
+
+console.log('\nfence: a repeating alarm that revives a dead chain and never stacks one')
+{
+  // Fence wake with only the fence pending: the chain's next alarm is gone -> re-arm it.
+  const dead = makeWatch()
+  dead.state.pending = [900] // the fence itself
+  const st = await runWake(dead, 'via=alarm&mode=oneshot&fence=1')
+  check('a dead chain is revived exactly once', st.armedCalls === 1, String(st.armedCalls))
+  check('the fence did not re-arm itself (no repeat alarm)', st.frames.every((f) => !(f.json && f.json.e === 'tick.fence' && f.json.repeat)), JSON.stringify(st.frames))
+  check('tick.fence is reported', logs(st, 'tick.fence').length === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
+  const tel = (logs(st, 'tick.fence')[0] || {}).json || {}
+  check('tick.fence carries the pending count and the verdict', tel.pending === 1 && tel.alive === 0 && tel.revived === 1, JSON.stringify(tel))
+  check('a fence wake still polls', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
+
+  // Fence wake with fence + chain both pending: nothing to do, and above all no extra
+  // chain alarm - that would double the wake rate for the rest of the night.
+  const alive = makeWatch()
+  alive.state.pending = [900, 1001]
+  const st2 = await runWake(alive, 'via=alarm&mode=oneshot&fence=1')
+  check('a live chain is left alone', st2.armedCalls === 0, String(st2.armedCalls))
+  const tel2 = (logs(st2, 'tick.fence')[0] || {}).json || {}
+  check('tick.fence says alive', tel2.alive === 1 && tel2.revived === 0, JSON.stringify(tel2))
+  check('the fence wake still delivers', reqs(st2, 'poll').length === 1)
 }
 
 console.log('\ntelemetry: tick.wake is observable (defect 4)')

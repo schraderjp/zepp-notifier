@@ -1,5 +1,5 @@
 import { log } from '@zos/utils'
-import { isArmed, ensureTickAlarm, pendingIds, MODE_ONESHOT } from './shared/service'
+import { isArmed, ensureTickAlarm, setFenceAlarm, pendingIds, MODE_ONESHOT } from './shared/service'
 
 const logger = log.getLogger('relay.app')
 
@@ -28,6 +28,9 @@ App({
       return
     }
     const result = ensureTickAlarm({ mode: MODE_ONESHOT, delaySec: 60 })
+    // Nothing was pending, so no fence exists either (a fence is always pending while it
+    // repeats). Arm one with the chain: it is what survives a missed wake.
+    result.fence = setFenceAlarm()
     logger.log('auto-arm', JSON.stringify(result))
   },
 

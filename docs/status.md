@@ -9,7 +9,19 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.6** (code 73) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.6-*.zab`).
+**0.9.7** (code 74) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.7-*.zab`).
+0.9.6 is superseded by it; both carry the self-re-arming page and the duplicate-instance
+report, and 0.9.7 adds the **fence**.
+
+The fence is a REPEATING alarm (`repeat_period: 10`, `store: true`, param `fence=1`) armed
+with every Arm press, independent of the oneshot chain. It never re-arms itself and never
+adds a chain alarm while one is still pending. It exists because the chain is one alarm
+deep: a single missed delivery ends it until something re-arms. A `tick.fence` event while
+`tick.wake` is absent means the platform is still delivering alarms and the chain's arming
+is what stopped; if neither fires overnight, delivery itself stops and no in-app change can
+help — that is the outcome that would make "open the app in the morning" the design.
+
+**0.9.6** (code 73) changes:
 Three changes, all aimed at the "it stops talking for hours" report:
 
 * the page **re-arms itself** when the phone reports a silent chain (probe → force re-arm
@@ -23,10 +35,15 @@ Three changes, all aimed at the "it stops talking for hours" report:
   after installing a build.
 
 Diagnosis of the overnight outage (5.2 h, 03:40 → 08:52): the **watch** stopped, not the
-phone. `chainId` advanced 5 instead of ~624, so the alarm chain was not firing at all;
-the phone was merely dozing (`cache.refresh` silent, same instance), came back on its own,
-and then waited 11 min for a device request that never came. Details and the reusable
-diagnostic: `docs/findings.md` → "2026-11-10, morning".
+phone. `chainId` advanced 5 instead of ~624, so no wake happened at all; the phone was
+merely dozing (`cache.refresh` silent, same instance), came back on its own, and then waited
+11 min for a device request that never came. Details and the reusable diagnostic:
+`docs/findings.md` → "2026-11-10, morning".
+
+The watch was **worn all night and not in sleep mode**, so "sleep mode freezes the chain" is
+not the explanation — the alarm armed at 03:40:11 was simply never delivered. That is why the
+fence exists; if it too stays silent overnight, alarm delivery stops for a worn, screen-off
+watch and the answer is the morning re-arm rather than a code fix.
 
 Relay: deployed from git on `homelab` at
 `/opt/docker/dockhand/stacks/Local/zepp-relay`. The tap-loss work is additive
