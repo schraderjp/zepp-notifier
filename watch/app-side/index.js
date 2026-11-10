@@ -30,7 +30,7 @@ const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
 // Reported with side.online so the trace names the build that produced it. Keep it
 // equal to app.json's version.name: the side ships inside the same package.
-const SIDE_VERSION = '0.9.4'
+const SIDE_VERSION = '0.9.5'
 
 const mb = new MessageBuilder()
 
@@ -423,8 +423,10 @@ AppSideService({
         // which is why the report comes first: a tap that reached us is recorded
         // even if this instance dies before the POST.
         ctx.response({ data: { ok: true } })
+        // tap.received is the side's record of "an ack arrived from the watch". Do NOT also
+        // report ack.received: the relay records that itself in its POST /v1/ack handler,
+        // and emitting it here too made `grep -c ack.received` count every answer twice.
         report('tap.received', { i: req.i, a: req.a, via: 'request', device_ts: req.ts })
-        report('ack.received', { i: req.i, a: req.a })
         sendAck({ id: req.i, action: req.a, ts: req.ts })
         return
       }

@@ -6,10 +6,17 @@
 
 ## Installed
 
-**0.9.4** (code 71) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.4-*.zab`).
-It carries the tap-durability and telemetry fixes below; the wrist keeps running its
-current build until this is flashed and armed (arm silently: `show=0`, so no diagnostic
-notification per wake).
+**0.9.4** (code 71) is on the wrist and **working**: the first tap after the install produced
+`tap.received{try:0}` → `tap.received{via:request}` → `ack.received{transit_ms:1905}` →
+`tap.sent{lag:1240}`, with the carry alarm armed and cancelled (an extra `chainId` at tap
+time, no `tap.retry` 90 s later). `side.online` reports `0.9.4`, so the side restarted onto
+the new build as well.
+
+**0.9.5** (code 72) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.5-*.zab`).
+It removes one redundant side event: the side used to `report('ack.received')` on every ack,
+which the relay's own `POST /v1/ack` handler records anyway, so `grep -c ack.received`
+counted each answer twice. `tap.received` covers it. No behaviour change, no reflash
+required on its account.
 
 Relay: deployed from git on `homelab` at
 `/opt/docker/dockhand/stacks/Local/zepp-relay`. The tap-loss work is additive
