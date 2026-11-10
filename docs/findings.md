@@ -898,3 +898,25 @@ Both were invisible for the same reason: the page's only report was a `log()` li
 not relay) and a once-per-build localStorage marker that also blocked retrying the test. The
 lesson generalises: any experiment armed only from the page must report what it armed, to the
 relay, or the field data cannot be read.
+
+### Root cause of the missing heartbeat records: our own arm/sweep ordering
+
+The field datum that settled it: 3 s after an Arm press, `pending=[4577,4578,4579]` - exactly
+chain + oneshot fence + repeat fence, the table `armNotifier` builds by itself. Not one
+heartbeat record, and `chainId` +14 showed the `set()` calls happened.
+
+The cause is a design error in 0.9.11, not a platform behaviour:
+
+1. the page opened while armed (probe at 10:43:13) and `maybeHeartbeat()` armed the four
+   experiment records, setting its once-per-build marker;
+2. the Arm press then ran `forceTickAlarm()`, which cancels **every** alarm the app owns -
+   including those four;
+3. the arm callback called `maybeHeartbeat()` again, but the marker now read 0.9.11, so it
+   returned immediately.
+
+Arm, then sweep, then refuse to re-arm: the experiment was wiped by the very action meant to
+start it. A once-per-build marker made that unrecoverable without a flash.
+
+0.9.12 removes the marker entirely, forces a re-arm from the Arm callback (after the sweep),
+and only uses the table heuristic on a plain page open, with the baseline trio (3) treated as
+"nothing armed yet" - which is what the measurement showed the baseline to be.

@@ -157,11 +157,13 @@ Page({
     //
     // Duplicates are safe by construction: an Arm press sweeps every alarm we own first, and
     // the sweeper (hbe=1) tears the table down after 65 min. On a plain page open we only arm
-    // when the table looks like chain + fence, so reopening the app does not pile records up.
+    // when only the baseline trio is present, so reopening the app does not pile records up.
     if (!isArmed()) return
     if (!force && this.hbArmed) return
     const table = pendingIds()
-    if (!force && table.length > 2) {
+    // The baseline table is chain + oneshot fence + repeat fence = 3, so 3 means "nothing
+    // experimental armed yet" (measured: 0.9.11's pending after an Arm press was exactly 3).
+    if (!force && table.length > 3) {
       appendDevLog('hb skipped: table=' + JSON.stringify(table).slice(0, 60))
       return
     }
