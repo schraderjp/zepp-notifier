@@ -48,3 +48,20 @@ and the sample's do not.
 Evidence: https://github.com/zepp-health/zml/issues/3 (maintainer htoooth: "device-app
 is the browser and side-service is the server... if there is no communication link
 established, side-service cannot send to device-app").
+
+## Local modification (0.9.3) — `message-side.js` port filter
+
+`message-side.js` is **no longer verbatim** either: `onFragmentData()` drops every
+Data/DataWithSystemTool/Log frame whose `port2` is not the side's cached port, and an
+inbound frame is built with `port2 = appSidePort`, which is 0 until the shake reply
+arrives. So a frame the device sends during or before a handshake — the pre-shake
+telemetry beacon in `app-service/notifier.js` — was discarded here with nothing but a
+local `logger.error`, never reaching `POST /v1/log`.
+
+Fix: `acceptsPort()` (used by the three inbound branches) treats port 0 as acceptable
+and keeps the exact-match rule otherwise. The frame has already been routed to this
+channel, so the port number is a staleness hint rather than an address.
+
+Symptom it fixed: `grep -c '"event": "tick.wake"' events.jsonl` was 0 while the tick
+was polling every 60 s, and every `devLog()` written during a failed tap was
+unreadable remotely.

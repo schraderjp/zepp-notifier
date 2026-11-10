@@ -24,7 +24,9 @@
 //
 // E1 proved the transport (alarm -> one wake -> one Request -> one answer, 8
 // consecutive 60 s cycles). This build is E2: the answer carries notifications,
-// which are rendered here, and a button tap acks on its own wake.
+// which are rendered here, and a button tap acks on its own wake. Since 0.9.3 an ack
+// is *durable*: it is queued in localStorage before any BLE work and retried on later
+// wakes until the phone answers it (see the durability section below).
 
 import {
   MessageBuilder,
@@ -43,6 +45,7 @@ import { localStorage } from '@zos/storage'
 import { log } from '@zos/utils'
 import { MSG, decodeActionParam, encodeActionParam, normalizeNotification } from '../shared/protocol'
 import { armNext, armNextOneshot, pendingIds, cancelAllTickAlarms } from '../shared/alarm'
+import { createOutbox } from '../shared/outbox'
 // NO `@zos/app-service` IMPORT. Measured: 0.4.3 (no such import) executed and
 // rendered; 0.4.5-0.4.11 (with it) never executed once. Importing the module that
 // manages app services into an app service is a load-time failure here, which
@@ -56,6 +59,25 @@ const logger = log.getLogger('relay.tick')
 const SERVICE_FILE = 'app-service/notifier'
 const ARMED_KEY = 'relay_armed'
 const BUZZ = 5
+
+// --- durability -------------------------------------------------------------
+//
+// A wake is a fresh JS context: nothing survives it except storage. Two queues
+// therefore live in localStorage, and both are flushed only AFTER the handshake
+// (see beacon() for why the pre-shake window cannot be used):
+//
+//   ACKS  a button the user already pressed. Written before the first BLE call and
+//         removed only when the phone answers, so a tap is at-least-once instead of
+//         one fire-and-forget frame. The relay collapses identical (id, action)
+//         retries, so a replay is free.
+//   LOGS  telemetry. Same queue for a different reason: a beacon sent before the
+//         shake carries port2=0 and the phone drops it, which is why `tick.wake`
+//         was never in events.jsonl.
+const ACKS = createOutbox(localStorage, 'relay_ackq', 12, (e) => e.i + '|' + e.a)
+const LOGS = createOutbox(localStorage, 'relay_logq', 24, null)
+// How many queued acks one wake may try to drain. One is the normal case; the cap
+// only bounds a backlog so a single wake cannot exceed its execution budget.
+const ACK_PER_WAKE = 3
 
 // 'probe' = E1, transport only. 'poll' = E2, fetch + render.
 const TICK_KIND = 'poll'
@@ -132,7 +154,9 @@ function connect(done) {
   }
   // A brand-new builder's shake promise resolves when the side answers the
   // shake. If the side is not running it never resolves and the OS kills this
-  // tick - which is the correct, silent outcome, not a hang to work around.
+  // tick. Nothing is lost by that: work that matters (an ack, telemetry) is already
+  // in localStorage, and the next wake retries it - so a dead link costs latency,
+  // not an answer.
   const p = mb.waitingShakePromise
   if (!p || typeof p.then !== 'function') return done(true)
   p.then(() => done(true)).catch(() => done(false))
@@ -181,25 +205,96 @@ function requestOnce(payload, done) {
   }
 }
 
-// Fire-and-forget beacon, sent BEFORE the shake completes. Its only purpose is
-// to make "the alarm fired but the link is dead" distinguishable from "the
-// alarm never fired": the frame is small and the side's inbound path does not
-// filter ports, so it can arrive even when the handshake will not.
+// Fire-and-forget Notify frame, used ONLY once the shake has completed.
+//
+// A frame's header carries port2 = mb.appSidePort, which is 0 until the shake reply
+// fills it in, and the phone's inbound path drops a Data frame whose port2 is not its
+// own port (watch/shared/VENDORED.md). So a pre-shake beacon is not "sent early", it
+// is sent nowhere - that was the whole reason every devLog written during a tap was
+// invisible remotely. Everything that must be observable now goes through queueLog()
+// and flushLogs().
+//
+// Returns false when nothing could be sent, so the caller can keep the payload queued
+// rather than lose it.
 function beacon(payload) {
+  if (!mb || !mb.appSidePort) {
+    devLog('beacon.no-link ' + ((payload && payload.e) || '?'))
+    return false
+  }
   try {
     // Deliberately not mb.call(): call() runs fork(), which arms a setTimeout and
-    // therefore waits for a handshake that may never come. This frame is meant to
-    // go out immediately, even with appSidePort still 0.
-    mb &&
-      mb.sendJson({
-        json: payload,
-        type: MessagePayloadType.Notify,
-        contentType: MessagePayloadDataTypeOp.JSON,
-        dataType: MessagePayloadDataTypeOp.EMPTY,
-      })
+    // therefore waits for a handshake that is already done.
+    mb.sendJson({
+      json: payload,
+      type: MessagePayloadType.Notify,
+      contentType: MessagePayloadDataTypeOp.JSON,
+      dataType: MessagePayloadDataTypeOp.EMPTY,
+    })
+    return true
   } catch (e) {
     devLog('beacon.fail ' + e)
+    return false
   }
+}
+
+// Telemetry: durable, then flushed when a link exists. Cheap - the App Service only
+// writes JSON to localStorage a handful of times per wake.
+function queueLog(payload) {
+  return LOGS.push(payload)
+}
+
+// Send queued telemetry frames, oldest first, stopping at the first refusal so the rest
+// stay for the next wake. Bounded per WAKE (not per call): after a long outage the queue
+// can hold a couple of dozen entries, and draining all of them must not eat the budget of
+// the poll that is the reason this wake exists. `logsSent` is module state, and a module
+// instance is exactly one wake. Returns how many left this context.
+const LOG_BUDGET = 8
+let logsSent = 0
+
+function flushLogs() {
+  const list = LOGS.list()
+  let sent = 0
+  while (sent < list.length && logsSent < LOG_BUDGET) {
+    if (!beacon(list[sent])) break
+    sent++
+    logsSent++
+  }
+  if (sent) LOGS.take(sent)
+  return sent
+}
+
+// Record a tap durably. Called before any BLE work: whatever fails afterwards, the
+// press itself is already answerable.
+function queueAck(i, a, ts) {
+  return ACKS.push({ i: String(i), a: String(a || ''), ts: ts || Date.now() })
+}
+
+// Drain queued acks, one request each, sequentially. A response from the side IS the
+// receipt: the side answers before it does HTTP and queues to its own outbox if the
+// POST fails, so once it has answered the ack is out of the watch's hands.
+// Stops on the first send that produces no answer; the entry stays queued.
+function flushAcks(limit, done) {
+  const list = ACKS.list()
+  if (!list.length) return done(0)
+  let sent = 0
+  let idx = 0
+  const next = () => {
+    if (idx >= list.length || sent >= limit) return done(sent)
+    const item = list[idx++]
+    requestOnce({ t: MSG.ACK, i: item.i, a: item.a, ts: item.ts }, (res) => {
+      if (!res) {
+        devLog('ack.nores ' + item.i)
+        queueLog({ t: MSG.LOG, e: 'tap-send-failed', i: item.i, a: item.a })
+        return done(sent)
+      }
+      ACKS.drop((e) => e.i === item.i && e.a === item.a)
+      sent++
+      devLog('ack.sent ' + item.i + '/' + item.a + ' lag=' + (Date.now() - item.ts))
+      queueLog({ t: MSG.LOG, e: 'tap.sent', i: item.i, a: item.a, lag: Date.now() - item.ts })
+      next()
+    })
+  }
+  next()
 }
 
 // --- work -------------------------------------------------------------------
@@ -258,6 +353,13 @@ function chainVerdict(chain) {
 
 function tick(param) {
   const raw = String(param || '')
+
+  // A TAP IS A USER ACTION, NOT A TICK. It is handled before the storm guard, before
+  // re-arming and before the armed gate, because none of those have anything to say
+  // about a button the user has already pressed. Ordering this after `isArmed()` is
+  // how an answer used to evaporate: no alarm, no notification, no devLog the operator
+  // could ever read.
+  if (raw.indexOf('i=') >= 0) return tap(raw)
 
   const show = raw.indexOf('show=1') >= 0
   const armed = isArmed()
@@ -320,9 +422,6 @@ function tick(param) {
     return quit('disarmed')
   }
 
-  // A button tap: the notification's action param carries the id + action.
-  if (raw.indexOf('i=') >= 0) return tap(raw)
-
   const st = bleStatus()
   // Strict false: an undefined/unknown answer must not silently disable the tick.
   let connected = null
@@ -333,14 +432,19 @@ function tick(param) {
   }
   // Local logging is deliberately sparse in here: every devLog() rewrites the whole
   // ring buffer to localStorage AND to @zos/fs, and this file runs once a minute
-  // forever. The beacon below carries the same facts to the server, so the
+  // forever. The queued telemetry below carries the same facts to the server, so the
   // on-watch copy is reserved for failures and for the exit reason.
   if (connected === false) {
     // Nothing to pull and every send would be swallowed; the next alarm retries.
     devLog('tick skip: bluetooth disconnected')
+    queueLog({ t: MSG.LOG, e: 'tick.no-ble', wake: raw.slice(0, 60), ble: st, conn: connected })
     return quit('no-ble')
   }
-  beacon({
+  // Queued, not sent: before the handshake `appSidePort` is 0 and the phone drops the
+  // frame. flushLogs() runs inside the connect callback, which is also why a wake that
+  // never gets a link still has its `tick.wake` reported on the next one - delayed, but
+  // never silent.
+  queueLog({
     t: MSG.LOG,
     e: 'tick.wake',
     wake: raw,
@@ -353,7 +457,12 @@ function tick(param) {
   })
 
   connect((ok) => {
-    if (!ok) return quit('no-shake')
+    if (!ok) {
+      devLog('tick-no-shake')
+      queueLog({ t: MSG.LOG, e: 'tick.no-shake', wake: raw.slice(0, 60), ble: st, conn: connected })
+      return quit('no-shake')
+    }
+    flushLogs()
     if (TICK_KIND === 'poll') {
       // Ack-driven since 0.5.3: the relay serves everything not yet reported as
       // rendered, so no cursor crosses the wire and a lost response costs one
@@ -363,7 +472,8 @@ function tick(param) {
         // notifications overnight. Name it in the trace instead of vanishing.
         if (!res) {
           devLog('poll.nores')
-          beacon({ t: MSG.LOG, e: 'poll.nores' })
+          queueLog({ t: MSG.LOG, e: 'poll.nores' })
+          flushLogs()
           quit('poll-nores')
           return
         }
@@ -415,7 +525,16 @@ function tick(param) {
             devLog('seen.send.fail ' + e)
           }
         }
-        quit('poll')
+        // Anything a previous wake could not deliver is retried here, after a
+        // successful exchange: a tap whose wake died before the handshake is still
+        // queued, and this is the wake that finally answers it.
+        flushLogs()
+        // The telemetry those retries wrote is flushed in the same wake, so an ack and
+        // its trace always travel together and a rebuild is never ambiguous.
+        flushAcks(ACK_PER_WAKE, () => {
+          flushLogs()
+          quit('poll')
+        })
       })
       return
     }
@@ -426,22 +545,40 @@ function tick(param) {
   })
 }
 
-// Tap path: one request, exit on the answer. The side replies before it does
-// HTTP, so the budget is one BLE round trip, not one round trip plus a POST.
+// Tap path: durable first, then one request per queued ack, exit on the answer. The
+// side replies before it does HTTP, so the budget is one BLE round trip per ack, not
+// one round trip plus a POST.
 function tap(raw) {
   const { i, a } = decodeActionParam(raw)
-  if (!i) return quit('tap-no-id')
+  // No id in the param: the press is unanswerable, but it must not be invisible.
+  if (!i) {
+    devLog('tap-no-id ' + raw.slice(0, 40))
+    queueLog({ t: MSG.LOG, e: 'tap-no-id', wake: raw.slice(0, 60) })
+    return quit('tap-no-id')
+  }
+
+  // THE DURABILITY POINT. Everything below this line can fail - Bluetooth can be
+  // down, the shake can never resolve, the OS can reap this context mid-flight - and
+  // none of it may cost the answer. The press is recorded here and removed only when
+  // the phone answers, so a failed wake becomes a retry, not a lost tap.
+  const ts = Date.now()
   devLog('tap ' + i + '/' + a)
+  queueAck(i, a, ts)
+  queueLog({ t: MSG.LOG, e: 'tap.received', i, a, queued: ACKS.size(), ts })
+
   connect((ok) => {
-    if (!ok) return quit('tap-no-shake')
-    // Fire-and-forget first: a small Notify frame goes out even before the shake
-    // resolves, so the ack is not lost if the handshake never completes. The
-    // probe afterwards is only a flush barrier - it proves the link carried a
-    // frame, without sending the ack twice.
-    beacon({ t: MSG.ACK, i, a, ts: Date.now() })
-    requestOnce({ t: MSG.PROBE, from: 'tap' }, (res) => {
-      devLog('tap flushed=' + (res ? 1 : 0))
-      quit('tap')
+    if (!ok) {
+      // Nothing can leave this context, but the tap is already queued: the next wake
+      // retries it. Record why this one failed so the gap is named, not silent.
+      devLog('tap-no-shake ' + i)
+      queueLog({ t: MSG.LOG, e: 'tap-no-shake', i, a, queued: ACKS.size() })
+      return quit('tap-no-shake')
+    }
+    flushLogs()
+    flushAcks(ACK_PER_WAKE, (sent) => {
+      flushLogs()
+      devLog('tap acked=' + sent + ' queued=' + ACKS.size())
+      quit(sent ? 'tap' : 'tap-unacked')
     })
   })
 }

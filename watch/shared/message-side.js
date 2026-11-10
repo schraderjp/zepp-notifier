@@ -831,6 +831,16 @@ export class MessageBuilder extends EventBus {
     }
   }
 
+  // LOCAL CHANGE - see VENDORED.md. A device frame sent before the handshake carries
+  // port2 = 0, because the device has not learned this port yet. The upstream filter
+  // dropped every such frame with only a local `logger.error` - which is exactly how
+  // the watch's pre-shake telemetry became invisible. The frame is already ours (same
+  // channel, same app), so the port is a staleness heuristic, not an address: accept 0
+  // as well as the cached port.
+  acceptsPort(port2) {
+    return port2 === 0 || port2 === this.appSidePort
+  }
+
   onFragmentData(bin) {
     const data = this.readBin(bin)
     this.emit('raw', bin)
@@ -840,13 +850,13 @@ export class MessageBuilder extends EventBus {
       this.appSidePort = data.port2
       logger.debug('appSidePort=>', data.port2)
       this.shakeTask.resolve()
-    } else if (data.flag === MessageFlag.App && data.type === MessageType.Data && data.port2 === this.appSidePort) {
+    } else if (data.flag === MessageFlag.App && data.type === MessageType.Data && this.acceptsPort(data.port2)) {
       this.emit('message', data.payload)
       this.emit('read', data)
-    } else if (data.flag === MessageFlag.App && data.type === MessageType.DataWithSystemTool && data.port2 === this.appSidePort) {
+    } else if (data.flag === MessageFlag.App && data.type === MessageType.DataWithSystemTool && this.acceptsPort(data.port2)) {
       this.emit('message', data.payload)
       this.emit('read', data)
-    } else if (data.flag === MessageFlag.App && data.type === MessageType.Log && data.port2 === this.appSidePort) {
+    } else if (data.flag === MessageFlag.App && data.type === MessageType.Log && this.acceptsPort(data.port2)) {
       this.emit('log', data.payload)
     } else {
       logger.error('error appSidePort=>%d data=>%j', this.appSidePort, data)

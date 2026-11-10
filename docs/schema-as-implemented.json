@@ -204,6 +204,16 @@
             "null"
           ]
         },
+        "peek_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peeked_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "rendered_at": {
           "type": [
             "integer",
@@ -421,10 +431,7 @@
           "centre": {
             "44-069fc5": 42
           },
-          "cancelled": [],
-          "live": [
-            42
-          ]
+          "cancelled": []
         }
       ]
     },
@@ -453,6 +460,24 @@
         }
       },
       "additionalProperties": false
+    },
+    "logRequest": {
+      "type": "object",
+      "description": "POST /v1/log \u2014 device telemetry (operator token). The relay stores `event` verbatim and appends the whole body to events.jsonl, so the rest of the object is free-form and versioned by the device, not by this schema.",
+      "required": [
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "description": "Event name. poll.served and poll.nores additionally refresh last_poll_ms, which is what keeps /health's chain block honest."
+        },
+        "ts": {
+          "type": "integer",
+          "description": "Device clock, epoch ms. Observational only: ordering comes from the relay's received_at."
+        }
+      },
+      "additionalProperties": true
     },
     "ackRequest": {
       "type": "object",

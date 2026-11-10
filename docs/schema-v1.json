@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zepp-notifier.local/schema-v1.json",
   "title": "Relay API v1 (2026-11-05) \u2014 implemented",
-  "description": "The sender and device contract as implemented. Dismissal tracking was removed: getAllNotifications() throws in the App Service, and page-reported presence was judged not worth the mechanism. Behaviour is covered by tools/test-contract.py.",
+  "description": "The sender and device contract as implemented. Dismissal tracking was removed: getAllNotifications() throws in the App Service, and page-reported presence was judged not worth the mechanism. Behaviour is covered by tools/test-contract.py. Human-readable field-by-field companion, checked against this file by tools/check-checklist.py: docs/client-checklist.md.",
   "$defs": {
     "action": {
       "type": "object",
@@ -203,6 +203,18 @@
             "integer",
             "null"
           ]
+        },
+        "peek_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many times a ?peek=1 inbox call listed this item. A peek is the phone's cache refresh, so this counts 'reached the phone', not 'reached the wrist'; served_count stays the wrist counter."
+        },
+        "peeked_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Epoch ms of the last ?peek=1 listing, or null if the phone cache never pulled this item."
         },
         "rendered_at": {
           "type": [
@@ -421,10 +433,7 @@
           "centre": {
             "44-069fc5": 42
           },
-          "cancelled": [],
-          "live": [
-            42
-          ]
+          "cancelled": []
         }
       ]
     },
@@ -453,6 +462,33 @@
         }
       },
       "additionalProperties": false
+    },
+    "logRequest": {
+      "type": "object",
+      "description": "POST /v1/log \u2014 device telemetry (operator token). The relay stores `event` verbatim and appends the whole body to events.jsonl, so the rest of the object is free-form and versioned by the device, not by this schema.",
+      "required": [
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "description": "Event name. poll.served and poll.nores additionally refresh last_poll_ms, which is what keeps /health's chain block honest."
+        },
+        "ts": {
+          "type": "integer",
+          "description": "Device clock, epoch ms. Observational only: ordering comes from the relay's received_at."
+        }
+      },
+      "additionalProperties": true,
+      "examples": [
+        {
+          "event": "tap.received",
+          "ts": 1794281003964,
+          "i": "18-93cebd",
+          "a": "taken",
+          "via": "request"
+        }
+      ]
     },
     "ackRequest": {
       "type": "object",

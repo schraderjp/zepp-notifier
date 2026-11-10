@@ -28,6 +28,9 @@ const K = {
 
 const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
+// Reported with side.online so the trace names the build that produced it. Keep it
+// equal to app.json's version.name: the side ships inside the same package.
+const SIDE_VERSION = '0.9.3'
 
 const mb = new MessageBuilder()
 
@@ -130,19 +133,43 @@ function outboxWrite(list) {
   } catch (e) {}
 }
 
+// A tap can arrive more than once for the same (id, action): the watch retries until
+// it gets an answer, and the relay collapses duplicates on its side. Collapsing them
+// here too keeps the outbox from turning into twenty copies of one press.
+function sameAck(a, b) {
+  return String(a && a.id) === String(b && b.id) && String(a && a.action) === String(b && b.action)
+}
+
+function queueAckForLater(item) {
+  const list = outboxRead().filter((e) => !sameAck(e, item))
+  list.push(item)
+  outboxWrite(list)
+}
+
+function forgetQueuedAck(item) {
+  const list = outboxRead()
+  const kept = list.filter((e) => !sameAck(e, item))
+  if (kept.length !== list.length) outboxWrite(kept)
+}
+
 async function sendAck(item) {
+  // Queue FIRST, unconditionally, then try to send. The watch drops its own copy the
+  // moment this side answers it, so this instance dying between the answer and the POST
+  // must not be the difference between an answer and silence. A replayed duplicate is
+  // free: the relay collapses identical (id, action).
+  queueAckForLater(item)
   const cfg = readCfg()
   if (!cfg.url) {
-    outboxWrite(outboxRead().concat([item]))
     report('ack.queued', { i: item.id, reason: 'no url' })
     return
   }
   try {
     await post(cfg, '/v1/ack', Object.assign({ device: DEVICE }, item))
+    // Sent: drop the durable copy, so the next drain does not replay it.
+    forgetQueuedAck(item)
     report('ack.sent', { i: item.id, a: item.action, lag: Date.now() - (item.ts || Date.now()) })
   } catch (e) {
     lastError = 'ack: ' + e
-    outboxWrite(outboxRead().concat([item]))
     report('ack.failed', { i: item.id, err: String(e) })
   }
 }
@@ -155,18 +182,22 @@ async function flushOutbox() {
   const pending = outboxRead()
   if (!cfg.url || !pending.length) return
   flushing = true
-  const keep = []
+  const delivered = []
   let sent = 0
   try {
     for (const item of pending) {
       try {
         await post(cfg, '/v1/ack', Object.assign({ device: DEVICE, replay: true }, item))
+        delivered.push(item)
         sent++
-      } catch (e) {
-        keep.push(item)
-      }
+      } catch (e) {}
     }
-    outboxWrite(keep)
+    if (delivered.length) {
+      // Remove the delivered ones from a FRESH read, never by writing back a stale
+      // snapshot: sendAck() may have queued a new ack while this loop was awaiting, and
+      // that entry is the one the watch has already forgotten about.
+      outboxWrite(outboxRead().filter((e) => !delivered.some((d) => sameAck(d, e))))
+    }
   } finally {
     flushing = false
   }
@@ -388,8 +419,11 @@ AppSideService({
       if (req.t === MSG.ACK) {
         dropFromCache([req.i])
         // Answer BEFORE the HTTP: the watch is inside a single-execution budget
-        // and exits on this response.
+        // and exits on this response. That response is also the watch's receipt,
+        // which is why the report comes first: a tap that reached us is recorded
+        // even if this instance dies before the POST.
         ctx.response({ data: { ok: true } })
+        report('tap.received', { i: req.i, a: req.a, via: 'request', device_ts: req.ts })
         report('ack.received', { i: req.i, a: req.a })
         sendAck({ id: req.i, action: req.a, ts: req.ts })
         return
@@ -416,13 +450,16 @@ AppSideService({
         sendSeen({ ids, centre: msg.centre, cancelled: msg.cancelled })
         return
       } else if (msg.t === MSG.ACK) {
+        // Older watch builds sent the ack as a Notify frame. Still accepted, and still
+        // named in the trace, so a mixed pairing is diagnosable from events alone.
+        report('tap.received', { i: msg.i, a: msg.a, via: 'notify', device_ts: msg.ts })
         sendAck({ id: msg.i, action: msg.a, ts: msg.ts })
       } else if (msg.t === MSG.LOG) {
         report(msg.e || 'device.log', { data: msg })
       }
     })
 
-    report('side.online', { version: '0.4.13', url: readCfg().url })
+    report('side.online', { version: SIDE_VERSION, url: readCfg().url })
   },
 
   onDestroy() {

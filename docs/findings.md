@@ -581,3 +581,55 @@ neither looks like what it is: a `Permission denied` on the token file is SELinu
 denying the bind-mount, not a bad path (fix: `:ro,z`), and a secrets file that works
 for you at `600` is unreadable to the container's `nobody` user without the relabel.
 Real Docker secrets mount `0444` and sidestep both.
+
+## 2026-11-10 — a lost tap, and two silent failures hiding each other
+
+Evidence first, because it decides the shape of the fix: on one evening, four relay
+notifications that were structurally identical (same tag, same key shape, same
+`expires_at`, same two actions) produced two acks and two silences. `ack.received` is
+recorded for **any** ack the relay sees, including one for an unknown id, so its absence
+is conclusive — no ack frame arrived. In the silent windows the relay saw only
+`poll.served` every 60 s. Not payload-dependent, not sender-dependent, and not
+relay-dependent.
+
+The observability claim was the one that explained everything: `grep -c '"event":
+"tick.wake"' events.jsonl` was **0** while the tick polled every 60 s. The watch's own
+telemetry was never arriving, so every `devLog()` written during a failed tap was
+unreadable remotely — the failure was not "mysterious", it was unrecorded.
+
+Two independent defects produced that, and either alone would have kept the window dark:
+
+1. `beacon()` was called from `tick()` **before** `connect()`, i.e. while `mb` was still
+   `null`. Its `mb && mb.sendJson(...)` guard meant it silently sent nothing. The
+   handover comment claimed the frame "goes out immediately, even with appSidePort still
+   0"; it did not go out at all.
+2. Even with a builder, a frame assembled before the shake carries `port2 = 0`, and the
+   side's `onFragmentData()` drops any Data frame whose `port2` is not its cached port,
+   logging only a local `logger.error`. That is the same port-staleness defect already
+   fixed on the device side in 0.2.8 (`fork()`, no inbound filter) and never mirrored on
+   the phone side.
+
+Lesson worth keeping: those two are in different files, in different runtimes, and each
+one hides the other. Fixing only the `mb` guard would have moved the loss into the side's
+filter and produced exactly the same trace: nothing.
+
+The tap path itself had the same shape of mistake. The ack was sent inside the
+`connect()` callback, after `if (!ok) return quit('tap-no-shake')`, while its comment
+claimed it went out before the handshake — so a BT hiccup at tap time threw the answer
+away, with a local log nobody could read. And taps were gated on `isArmed()`, which is a
+question about *scheduled ticks* and has no business rejecting a button the user has
+already pressed. Fixed by writing the press to a localStorage outbox before any BLE call
+and removing it only when the side answers (at-least-once; the relay's `(id, action)`
+collapse makes replays free), and by handling taps before the storm guard, the re-arm and
+the armed gate.
+
+Also measured here: `served_count` cannot be read alone. The side answers the watch from
+its cache and refreshes with `?peek=1`, and the relay deliberately does not count a peek
+as a handover — so a notification that rendered fine showed `served_count: 0` and looked
+never-delivered. `peek_count`/`peeked_at` now count that separately.
+
+Finally, the sender side of the same night: five contract mistakes in one client, every
+one of them invisible to its own tests because the fakes were written from the same
+prose. `docs/schema-v1.json` was correct throughout but was not the file the author read.
+`docs/client-checklist.md` is now the file to read, and `tools/check-checklist.py` fails
+the build if it drifts from the schema.

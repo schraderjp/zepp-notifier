@@ -6,9 +6,53 @@
 
 ## Installed
 
-**0.5.6** (code 58) — `dist/10262217-Notify_Relay-0.5.6-20261105095528.zab`.
-Armed silently (silent arm = `show=0`, so no diagnostic notification per wake).
-Side Service instance is fresh from the 09:57 install/arm.
+**0.9.3** (code 70) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.3-*.zab`).
+It carries the tap-durability and telemetry fixes below; the wrist keeps running its
+current build until this is flashed and armed (arm silently: `show=0`, so no diagnostic
+notification per wake).
+
+Relay: deployed from git on `homelab` at
+`/opt/docker/dockhand/stacks/Local/zepp-relay`. The tap-loss work is additive
+(`peek_count`, `peeked_at`, `logRequest`, a snapshot copy for `queued` facts), so old and
+new interoperate in either direction; until the relay is redeployed,
+`GET /v1/notification/<id>` just will not show the peek counters.
+
+## Tap loss — watch-side durability, and the telemetry window that hid it (2026-11-10)
+
+Action-button taps on relay-delivered notifications sometimes never reached the relay,
+with no trace on the watch, in the side's log, or in `events.jsonl`. The relay behaved
+correctly throughout (its ack handler records even an unknown id, so a missing
+`ack.received` is proof no frame arrived). Four defects in `watch/` explain it; all four
+are fixed in **0.9.3** (built, not yet installed on the wrist).
+
+| defect | fix |
+|---|---|
+| The ack went out **inside** the `connect()` callback, so a handshake hiccup at tap time discarded the tap with a local `devLog` and nothing on the wire. The comment claimed the opposite. | The press is written to a localStorage outbox **before** any BLE call and removed only when the side answers. A wake that cannot reach the phone becomes a retry on the next one: taps are at-least-once, and the relay already collapses identical `(id, action)`. |
+| A tap was gated on `isArmed()`, so a disarmed tick silently ate the answer. | Taps are handled at the top of `tick()`, before the storm guard, re-arming and the armed gate. A user action outranks every scheduled-tick concern. |
+| One fire-and-forget frame, no queue, no confirmation. | `MSG.ACK` is now a Request the side answers (the answer is the receipt); unanswered entries stay queued and up to 3 drain per wake. The side dedupes its own outbox by `(id, action)`. |
+| Watch telemetry never reached the server: `grep -c '"event": "tick.wake"' events.jsonl` was 0 while the tick polled every 60 s. | Two causes, both real: `beacon()` ran while `mb` was still null, so nothing was ever sent; and even with a builder, a pre-shake frame carries `port2 = 0`, which the **side** dropped with only a local `logger.error`. Telemetry now queues and flushes only after the shake, and `message-side.js` accepts port 0 (`watch/shared/VENDORED.md`). |
+
+Evidence: `watch/tools/test-tap.mjs` (39 assertions) drives the real notifier against the
+real vendored library with `@zos/*` stubbed and one module instance per simulated wake —
+disarmed tap still acks, a dead handshake loses nothing, the next wake retries and stops
+only on a receipt, `tick.wake` and `tap-no-id` reach the relay. `npm run check` = that
+plus `undef-check`; `tools/test-contract.py` **139 passed, 0 failed**.
+
+Named events now: `tap.received`, `tap.sent`, `tap-no-id`, `tap-no-shake`,
+`tap-send-failed` (watch telemetry), and `tap.received` from the side on both ack paths.
+
+Relay side, same night, all additive:
+
+* `peek_count` / `peeked_at` on `$defs/notification`: a `?peek=1` listing is the phone
+  cache reaching the item, not the wrist, so it is counted separately instead of leaving
+  a rendered item looking never-served. `served_count` keeps its old meaning.
+* `$defs/logRequest` documented; the bogus `live` field removed from the `seenRequest`
+  example (an example is what a client author copies).
+* A `queued` fact is now a deep copy. It used to share `answers` with the live item, so a
+  fact read later appeared to contain an answer that postdated it.
+* `docs/client-checklist.md` + `tools/check-checklist.py`: one line per endpoint, exact
+  field names and types, verified against `schema-v1.json` (116 fields, 21 definitions).
+  This is the fix for the five sender bugs prose caused in one night.
 
 ## Relay fix — answered-before-rendered (2026-11-08)
 

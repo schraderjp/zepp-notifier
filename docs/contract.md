@@ -6,6 +6,13 @@ below except the items explicitly marked deferred or dropped. Behaviour is cover
 docs/schema-as-implemented.json`; `docs/schema-v1.json` mirrors the implemented
 contract.
 
+> **Writing a client? Read [`docs/client-checklist.md`](client-checklist.md) first.**
+> This file explains *why*; that one states *what bytes come back* — one line per
+> endpoint with exact field names, types and a literal response, machine-checked
+> against `schema-v1.json` by `tools/check-checklist.py`. Five client bugs in one night
+> came from taking field names and types from prose here, so treat this file as the
+> reasoning and the checklist as the wire.
+
 ---
 
 ## 1. Principles
@@ -120,6 +127,11 @@ an item may be *served*; it cannot retract one already on the wrist (see 5.3).
 ## 4. Endpoints
 
 ### 4.1 Sender-facing
+
+Exact field names, types and literal responses for every route below are in
+[`client-checklist.md`](client-checklist.md) — that file is checked against
+`schema-v1.json` on every test run, and this table is not. Use it for the wire, this one
+for the intent.
 
 | method | path | purpose | today |
 |---|---|---|---|

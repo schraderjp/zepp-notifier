@@ -67,11 +67,14 @@ watch/                    Zepp OS mini app (appId 10262217, v0.9.0)
 server/spike_server.py    relay: sender API + device API + dashboard + /docs
 server/Dockerfile         stdlib-only image, runs as nobody
 compose.yaml              Dockhand/git deploy: secret, volume, loopback port
-tools/test-contract.py    88 assertions — the executable half of the contract
+tools/test-contract.py    139 assertions — the executable half of the contract
 tools/schema-check.py     dependency-free schema validator
+tools/check-checklist.py  checks docs/client-checklist.md against schema-v1.json
 tools/sender-example.py   reference sender: queue, long-poll, escalate
 tools/watch_run.py        unattended-run monitor (exits on first anomaly)
-docs/contract.md          API v1 final — the contract
+docs/contract.md          API v1 final — the contract, and the reasoning behind it
+docs/client-checklist.md  every endpoint's exact fields, types and literal reply
+watch/tools/test-tap.mjs  tap path under a simulated wake (durability, arming, retries)
 docs/schema-*.json        machine-readable schemas (served live at /docs/)
 docs/hosting.md           docker, TLS, migration, operator runbook
 docs/api-prior-art.md     ntfy/Gotify comparison that shaped v1
@@ -132,15 +135,18 @@ JSON
 
 Senders observe through one append-only log (`GET /v1/events?since&kind&tag&wait`,
 long-polled), queue with idempotent `key`s, and escalate locally on
-rendered-without-answered. The whole surface is in `docs/contract.md`, the
-shapes in `docs/schema-*.json`, and the happy path in `tools/sender-example.py`.
+rendered-without-answered. The reasoning is in `docs/contract.md`, the exact wire
+shapes in `docs/client-checklist.md` (checked against `docs/schema-*.json`), and the
+happy path in `tools/sender-example.py`.
 
 ## Tests
 
 ```sh
-python3 tools/test-contract.py     # 88 assertions, throwaway relay instances
+python3 tools/test-contract.py        # 139 assertions, throwaway relay instances
 python3 tools/schema-check.py --live docs/schema-as-implemented.json
 python3 tools/schema-check.py docs/schema-v1.json --defs
+python3 tools/check-checklist.py      # checklist fields vs schema, no drift
+cd watch && npm run check             # undefined-call check + tap-path harness
 ```
 
 Hardware proofs (measured, in `docs/findings.md`): 16/16 soak delivered with zero

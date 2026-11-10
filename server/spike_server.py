@@ -21,6 +21,7 @@ Run:  python3 server/spike_server.py --port 8099
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -168,7 +169,13 @@ def fact(kind: str, notif: dict, **extra) -> dict:
         "at": now_ms(),
     }
     if kind == "queued":
-        item["notification"] = {k: v for k, v in notif.items() if k != "fingerprint"}
+        # A fact is a snapshot, not a window onto the live item. Without the copy the
+        # stored `queued` fact shares its `answers`/`action` objects with the item, so a
+        # sender reading the log an hour later sees an answer inside a fact that predates
+        # it - which reads as "the relay answered its own prompt".
+        item["notification"] = copy.deepcopy(
+            {k: v for k, v in notif.items() if k != "fingerprint"}
+        )
     item.update({k: v for k, v in extra.items() if v is not None})
     return item
 
@@ -398,6 +405,7 @@ def load_state() -> None:
                     ("key", None), ("tag", None), ("extras", {}), ("retract", False),
                     ("supersedes", None), ("superseded_by", None), ("expires_at", None),
                     ("not_before", None), ("expired_at", None), ("served_count", 0),
+                    ("peek_count", 0), ("peeked_at", None),
                     ("centre_id", None), ("cancelled_at", None),
                 ):
                     n.setdefault(field, default)
@@ -467,6 +475,8 @@ def create_notification(body: dict) -> tuple[dict, dict]:
                     "supersedes": None,
                     "served_count": 0,
                     "served_at": None,
+                    "peek_count": 0,
+                    "peeked_at": None,
                     "rendered_at": None,
                     "answers": [],
                     "expired_at": None,
@@ -506,6 +516,7 @@ def create_notification(body: dict) -> tuple[dict, dict]:
 def inbox(since: int, peek: bool = False) -> dict:
     global LAST_POLL_MS
     facts: list[dict] = []
+    peek_served = False
     with STATE_LOCK:
         now = now_ms()
 
@@ -558,6 +569,17 @@ def inbox(since: int, peek: bool = False) -> dict:
                 n["served_count"] = int(n.get("served_count") or 0) + 1
                 n["served_at"] = now
             LAST_POLL_MS = now
+        elif candidates:
+            # Peek serves are counted, just not as serves. They say the item reached the
+            # PHONE's cache, which is the earlier half of the delivery path: without this
+            # counter GET /v1/notification/<id> showed a rendered item with
+            # served_count 0 and no way to tell "never handed to a wrist" from "handed
+            # over, then vanished". Kept as a separate field so neither reading of
+            # served_count changes for existing senders.
+            for n in candidates:
+                n["peek_count"] = int(n.get("peek_count") or 0) + 1
+                n["peeked_at"] = now
+            peek_served = True
 
         # Which notification-centre ids should the watch delete? An answered reminder
         # has had its attention, a superseded item has been replaced, and an expired
@@ -590,7 +612,7 @@ def inbox(since: int, peek: bool = False) -> dict:
             ]
         )
 
-    if items or abandoned or facts:
+    if items or abandoned or facts or peek_served:
         save_state()
     emit_facts(facts)
     for nid, served in abandoned:

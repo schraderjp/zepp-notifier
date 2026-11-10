@@ -201,6 +201,11 @@ def main():
         check("state becomes answered", item["state"] == "answered", str(item.get("state")))
         st, page, _ = r.get("/v1/events?kind=answered")
         check("answered facts emitted", len(page["facts"]) == 2, str(page["facts"]))
+        # The queued fact predates the answers, so it must not carry them: a fact is a
+        # snapshot of the item at emit time, not a live reference.
+        st, page, _ = r.get("/v1/events?since=all&kind=queued")
+        queued_fact = next((f for f in page["facts"] if f.get("id") == d["id"]), None)
+        check("queued fact is a snapshot, not a live view", queued_fact is not None and queued_fact["notification"]["answers"] == [], str(queued_fact)[:300])
 
         # ---------------- expiry and not_before ----------------
         print("\nexpires_at and not_before")
@@ -602,6 +607,38 @@ def main():
         check("queue_depth ignores the answered item", health["queue_depth"] == 1, str(health))
     finally:
         tight.stop()
+
+    # ---------------- peek accounting -------------
+    # The side answers the watch from its cache and refreshes with ?peek=1, so a peek
+    # proves the item reached the PHONE, not the wrist. Keeping the two counters apart is
+    # what makes "queued but never handed to a wrist" distinguishable from "handed over,
+    # then vanished" (GET /v1/notification/<id> used to show a rendered item with
+    # served_count 0 and no other evidence).
+    print("\npeek accounting")
+    pk = Relay()
+    try:
+        st, item, _ = pk.post("/v1/notify", {"title": "Peek me", "body": "b", "tag": "peek.test"})
+        for _ in range(3):
+            st, peeked, _ = pk.get("/v1/inbox?device=t&peek=1")
+        check("peek still returns the item", any(i["id"] == item["id"] for i in peeked["items"]), str(peeked))
+        st, got, _ = pk.get("/v1/notification/%s" % item["id"])
+        check("peek does not increment served_count", int(got.get("served_count") or 0) == 0, str(got.get("served_count")))
+        check("peek increments peek_count", int(got.get("peek_count") or 0) == 3, str(got.get("peek_count")))
+        check("peek records peeked_at", isinstance(got.get("peeked_at"), int), str(got.get("peeked_at")))
+        check("peek does not claim served_at", got.get("served_at") is None, str(got.get("served_at")))
+
+        pk.get("/v1/inbox?device=t")
+        st, got, _ = pk.get("/v1/notification/%s" % item["id"])
+        check("a real serve increments served_count", int(got.get("served_count") or 0) == 1, str(got.get("served_count")))
+        check("a real serve leaves peek_count alone", int(got.get("peek_count") or 0) == 3, str(got.get("peek_count")))
+
+        # Old state files predate the fields: a restart must not turn them into /v1/inbox
+        # 500s or silently drop the counters that were already there.
+        pk.restart()
+        st, got, _ = pk.get("/v1/notification/%s" % item["id"])
+        check("peek counters survive a restart", int(got.get("peek_count") or 0) == 3, str(got.get("peek_count")))
+    finally:
+        pk.stop()
 
     print("\n%d passed, %d failed" % (passed, len(failed)))
     for f in failed:

@@ -9,8 +9,9 @@
   "scripts": {
     "build": "zeus build",
     "preview": "zeus preview",
-    "check": "node tools/undef-check.mjs",
-    "verify": "node tools/undef-check.mjs && zeus build"
+    "check": "node tools/undef-check.mjs && node tools/test-tap.mjs",
+    "test": "node tools/test-tap.mjs",
+    "verify": "npm run check && zeus build"
   },
   "devDependencies": {
     "@zeppos/zeus-cli": "1.9.3"
