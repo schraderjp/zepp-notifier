@@ -124,6 +124,7 @@ function makeWatch(options = {}) {
     armedCalls: 0,
     pending: [], // what getAllAlarms() reports: fence + any live chain alarm
     fences: [], // setFenceAlarm() calls
+    repeatFences: [], // setRepeatFence() calls
     carries: [], // setCarryAlarm() calls
     cancelledAlarms: [], // cancelAlarm() calls
     nextAlarmId: 500,
@@ -259,6 +260,12 @@ async function runWake(watch, param) {
       cancelAlarm: (id) => {
         state.cancelledAlarms.push(id)
         return true
+      },
+      repeatMinuteValue: () => 1,
+      setRepeatFence: (periodMin) => {
+        const entry = { periodMin: periodMin === undefined ? 10 : periodMin, id: state.nextAlarmId++ }
+        state.repeatFences.push(entry)
+        return { ok: true, id: entry.id, rm: 1, period: entry.periodMin, pendingNow: true }
       },
       setFenceAlarm: (delaySec) => {
         const entry = { delaySec: delaySec === undefined ? 300 : delaySec, id: state.nextAlarmId++ }
@@ -415,6 +422,22 @@ console.log('\nfence: an independent oneshot chain that can only re-arm itself')
   const off = makeWatch({ storage: fakeStorage({ relay_armed: '0' }) })
   const st3 = await runWake(off, 'via=alarm&mode=oneshot&fence=1')
   check('a disarmed fence is not re-armed', st3.fences.length === 0, JSON.stringify(st3.fences))
+}
+
+console.log('\nfence(repeat): the OS repeats it, so the wake must not re-arm anything')
+{
+  // The Weather-service shape, armed beside the oneshot fence. It must be inert except for
+  // the poll and the telemetry: re-arming a repeat alarm on every fire is the 0.4.23 storm.
+  const w = makeWatch()
+  w.state.pending = [900, 1001, 1002]
+  const st = await runWake(w, 'via=alarm&mode=oneshot&rfence=1')
+  check('a repeat-fence wake re-arms no oneshot fence', st.fences.length === 0, JSON.stringify(st.fences))
+  check('...and no repeat fence either', st.repeatFences.length === 0, JSON.stringify(st.repeatFences))
+  check('...and does not touch the main chain', st.armedCalls === 0, String(st.armedCalls))
+  const tel = (logs(st, 'tick.fence')[0] || {}).json || {}
+  check('tick.fence says kind:repeat', tel.kind === 'repeat', JSON.stringify(tel))
+  check('tick.fence reports the repeat_type value we sent', tel.rm === 1, JSON.stringify(tel))
+  check('a repeat-fence wake still delivers', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
 }
 
 console.log('\ntelemetry: tick.wake is observable (defect 4)')

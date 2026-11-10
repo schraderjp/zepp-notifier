@@ -9,7 +9,16 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.8** (code 75) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.8-*.zab`).
+**0.9.9** (code 76) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.9-*.zab`).
+It adds the repeat fence **beside** 0.9.8's oneshot fence, armed the way the working
+reference (SashaCX75/Weather-service) arms its own: first fire anchored to a period boundary
+via absolute `time`, `alarmMgr.REPEAT_MINUTE` passed straight through, `repeat_period: 10`,
+`repeat_duration: 1`, `store: true`, param `rfence=1`. A repeat-fence wake never re-arms
+anything and reports `tick.fence{kind:"repeat", rm, pending}` — `rm` is what tells us the
+constant's real value. If it never fires, 0.9.8's oneshot fence still carries the 5-minute
+fallback, so nothing regresses.
+
+**0.9.8** (code 75):
 
 0.9.7's fence was a **repeating** alarm and it never fired once: 32 minutes armed,
 `tick.fence` 0, while `getAllAlarms()` listed it as pending the whole time and the main

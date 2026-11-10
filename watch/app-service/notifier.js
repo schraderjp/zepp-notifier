@@ -52,6 +52,7 @@ import {
   setCarryAlarm,
   cancelAlarm,
   setFenceAlarm,
+  repeatMinuteValue,
 } from '../shared/alarm'
 // NO `@zos/app-service` IMPORT. Measured: 0.4.3 (no such import) executed and
 // rendered; 0.4.5-0.4.11 (with it) never executed once. Importing the module that
@@ -404,10 +405,23 @@ function tick(param) {
   // instead of stopping it. It re-arms only itself - never the main chain - because pending
   // alarms come back as bare ids, so "is the main chain alive" is not answerable from here,
   // and a wrong guess adds an alarm permanently (N pending -> N wakes a minute).
-  const fence = raw.indexOf('fence=1') >= 0
+  // `rfence=1` is the REPEAT fence (alarm.js setRepeatFence): the OS repeats it, so this
+  // wake must never re-arm it and never touch the chain. Checked before `fence=1` because
+  // 'rfence=1' contains 'fence=1'.
+  const repeatFence = raw.indexOf('rfence=1') >= 0
+  const fence = !repeatFence && raw.indexOf('fence=1') >= 0
   let chain = null
   let armF = null
-  if (fence) {
+  if (repeatFence) {
+    // The measurement: no re-arm, one poll, and `rm` reports the repeat_type value we sent.
+    queueLog({
+      t: MSG.LOG,
+      e: 'tick.fence',
+      kind: 'repeat',
+      rm: repeatMinuteValue(),
+      pending: pendingNow.length,
+    })
+  } else if (fence) {
     if (armed) armF = setFenceAlarm()
     // `pending` is the diagnostic: 2 means the main chain's next alarm is still in the
     // table beside this fence, 1 means this wake is alone - the main chain died and the
@@ -415,6 +429,7 @@ function tick(param) {
     queueLog({
       t: MSG.LOG,
       e: 'tick.fence',
+      kind: 'oneshot',
       pending: pendingNow.length,
       fenceOk: armF && armF.ok ? 1 : 0,
     })
@@ -480,7 +495,7 @@ function tick(param) {
     ble: st,
     conn: connected,
     // Readable in the server trace, which beats squinting at the watch.
-    fence: fence ? 1 : 0,
+    fence: fence || repeatFence ? 1 : 0,
     pending: pendingNow.length,
     chain: chainVerdict(chain),
     chainId: chain && chain.id !== undefined ? chain.id : -1,

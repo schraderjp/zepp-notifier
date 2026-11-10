@@ -765,3 +765,26 @@ answerable from inside a wake, and guessing wrong adds an alarm permanently (N p
 produce N wakes a minute, each arming one more). What it does instead is degrade: if the main
 chain stops, delivery continues at 5-minute latency, and `tick.fence` with `pending: 1` and no
 `tick.wake` beside it is the measurement that says the main chain died while delivery works.
+
+### Compared against the working repeat example (SashaCX75/Weather-service)
+
+We had been citing that repo's alarm shape second-hand. Reading it, the shape agrees with
+ours (`store: true, repeat_type: alarmMgr.REPEAT_MINUTE, repeat_period: 10,
+repeat_duration: 1`) — and it is armed once from a **page**, never re-armed from a service,
+which ours was too. Three things differ:
+
+| Weather-service | our 0.9.7 fence |
+|---|---|
+| `delay = 15 + secsToNextMinute + minutesToNext10 * 60`, i.e. the first fire lands on a period boundary (xx:x0:15) | flat `delay: 600` from whenever Arm was pressed — an arbitrary phase |
+| passes `alarmMgr.REPEAT_MINUTE` straight through | `repeatMinuteValue()`, whose fallback of `1` is only correct if that constant really is 1 here |
+| `repeat_period: 10` per the docs, where the interval is period + 1 ("every 21 days" = `repeat_period: 20`) | same numbers, so probably not the fault |
+
+The docs also only ever show repeat alarms with `time` (absolute UTC seconds), never a bare
+arbitrary `delay`. So the prime suspect is the **anchor**, with the constant value second.
+
+Rather than bet again, 0.9.9 arms the Weather-service form **beside** the oneshot fence:
+same boundary anchor, `time` instead of `delay`, the constant passed through, param
+`rfence=1`. A repeat-fence wake never re-arms anything (the OS repeats it) and only polls and
+reports `tick.fence{kind:"repeat", rm, pending}`. If it fires, `rm` also tells us what
+`REPEAT_MINUTE` actually is on this firmware; if it stays silent, the oneshot fence still
+degrades delivery to five minutes and nothing regresses.

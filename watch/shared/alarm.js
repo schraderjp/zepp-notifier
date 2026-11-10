@@ -223,7 +223,7 @@ function onceValue() {
   }
 }
 
-function repeatMinuteValue() {
+export function repeatMinuteValue() {
   try {
     return typeof alarmMgr.REPEAT_MINUTE === 'number' ? alarmMgr.REPEAT_MINUTE : 1
   } catch (e) {
@@ -516,6 +516,55 @@ export function setFenceAlarm(delaySec) {
   })
   if (result.ok) rememberId(result.id)
   result.delaySec = delay
+  return result
+}
+
+// --- the REPEAT fence (measured against a working reference) -------------------
+//
+// SashaCX75/Weather-service is the only repeat-alarm example known to work, and it does
+// three things our 0.9.7 attempt did not:
+//
+//   1. its first fire is anchored to a period boundary - `delay = 15 + secsToNextMinute +
+//      minutesToNext10 * 60`, i.e. it lands on xx:x0:15. Ours was a flat `delay: 600` from
+//      whenever the user pressed Arm, so it landed at an arbitrary offset. The docs' own
+//      repeat examples pass `time` (absolute UTC seconds) and never a bare arbitrary delay.
+//   2. it passes the module constant straight through (`alarmMgr.REPEAT_MINUTE`). We route it
+//      through `repeatMinuteValue()`, whose fallback of 1 is only correct if that constant
+//      really is 1 on this firmware - which is why `rm` is now in the telemetry.
+//   3. the docs' repeat semantics are offset by one: "one repeat period ... containing
+//      repeat_period times", and their example "reminder every 21 days" uses
+//      repeat_period: 20. So `repeat_period: 10` means an 11-minute interval, not 10.
+//
+// 0.9.9 arms this ALONGSIDE the oneshot fence rather than replacing it. If the repeat record
+// fires, `tick.fence{kind:"repeat"}` says so and the oneshot fence can be retired; if it
+// stays silent like last time, nothing regresses.
+export const REPEAT_FENCE_PERIOD_MIN = 10
+
+export function setRepeatFence(periodMin) {
+  const period = Math.max(2, Math.min(30, Math.floor(Number(periodMin) || REPEAT_FENCE_PERIOD_MIN)))
+  // Boundary anchor, the Weather-service formula: next whole minute, then the next
+  // `period`-minute boundary, plus 15 s so the fire is never scheduled in the past.
+  const nowSec = Math.floor(Date.now() / 1000)
+  const secToMinute = 60 - (nowSec % 60)
+  const minuteOfHour = Math.floor((nowSec % 3600) / 60)
+  let minutesToBoundary = period - (minuteOfHour % period) - 1
+  if (minutesToBoundary < 0) minutesToBoundary += period
+  const fireAt = nowSec + 15 + secToMinute + minutesToBoundary * 60
+  const rm = repeatMinuteValue()
+  const result = trySet({
+    url: NOTIFIER_SERVICE,
+    param: 'via=alarm&mode=oneshot&rfence=1',
+    store: STORE,
+    time: fireAt,
+    repeat_type: rm,
+    repeat_period: period,
+    repeat_duration: 1,
+  })
+  if (result.ok) rememberId(result.id)
+  result.fireAt = fireAt
+  result.rm = rm
+  result.period = period
+  result.pendingNow = result.ok ? pendingIds().indexOf(Number(result.id)) >= 0 : false
   return result
 }
 

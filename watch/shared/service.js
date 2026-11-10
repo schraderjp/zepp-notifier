@@ -19,7 +19,9 @@ import {
   ensureTickAlarm,
   forceTickAlarm,
   setFenceAlarm,
+  setRepeatFence,
   FENCE_PERIOD_SEC,
+  REPEAT_FENCE_PERIOD_MIN,
   cancelAllTickAlarms,
   pendingIds,
   armedIds,
@@ -46,7 +48,9 @@ export {
   ensureTickAlarm,
   forceTickAlarm,
   setFenceAlarm,
+  setRepeatFence,
   FENCE_PERIOD_SEC,
+  REPEAT_FENCE_PERIOD_MIN,
 }
 
 export const ARMED_KEY = 'relay_armed'
@@ -152,6 +156,8 @@ export function armNotifier(cb, options) {
     // alarm we own (including the previous fence). One repeating alarm, never re-armed by
     // the tick: see setFenceAlarm().
     result.fence = setFenceAlarm()
+    // The repeat fence is an experiment beside the oneshot one; see setRepeatFence().
+    result.repeatFence = setRepeatFence()
     if (cb) cb(result)
   })
 }
