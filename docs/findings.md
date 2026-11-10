@@ -958,3 +958,29 @@ can be replaced by one `set()` the page makes once.
 Note also the trap that wasted the 0.9.11 test: `forceTickAlarm()` cancels every alarm the app
 owns, so anything a page armed *before* an Arm press is swept by that press. Anything armed
 alongside must be armed *after* the sweep, in the same callback.
+
+### The sweep is complete: every repeat shape works, including the one we failed with twice
+
+Continued from the entry above, same arming (10:53:36):
+
+| record | shape | result |
+|---|---|---|
+| `hb1` | `delay 60`, `repeat_period 1` | fires, **60 s intervals, 11 in a row** |
+| `hb2` | `delay 60`, `repeat_period 2`, `repeat_duration: 1` | fires, **120 s** |
+| `hb3` | `delay 600`, `repeat_period 10` | fires, **first hop exactly 600 s** (11:03:36) |
+| rfence (0.9.9's) | `time` anchored to :00:15, `repeat_period 10`, `repeat_duration: 1` | fires at **11:00:16** |
+
+`hb3` is exactly the shape of the 0.9.7 fence that produced zero events in 32 minutes, and the
+rfence is exactly the 0.9.9 record. Both fire now. **There was never a firmware limitation, and
+neither `repeat_duration: 1` nor `repeat_period: 10` nor `delay: 600` is at fault.** The
+difference between then and now is not the record - it is that these records are armed *after*
+the sweep, in the same call that arms the chain, and that we finally let them run instead of
+concluding within one period.
+
+`rm: 1, rmSrc: "const"` on every one of them: `alarmMgr.REPEAT_MINUTE` is 1.
+
+Residual anomaly, noted not explained: the alarm table reports only 5 records
+(`[4592..4595, <chain>]`) where 7 were armed - the oneshot fence and the `hbe` sweeper are
+absent, while the three heartbeat records and the rfence persist and fire. The oneshot fence
+does keep firing (10:48:24, 10:58:36), so it is being re-armed by its own wake rather than
+surviving as the page left it.

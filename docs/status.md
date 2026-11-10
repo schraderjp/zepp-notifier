@@ -14,8 +14,11 @@ question this project has carried since 0.4.5: **repeat alarms work on this watc
 `tick.hb` fired for `hb1` (`delay 60`, `repeat_period 1`) at exactly 60 s intervals and for
 `hb2` (`repeat_period 2`, with `repeat_duration: 1`) at 120 s, with `rm: 1, rmSrc: "const"`.
 So `REPEAT_MINUTE` is 1 and `repeat_duration: 1` is harmless: neither of the long-standing
-suspects was the problem. `hb3` (`delay 600`, `repeat_period 10`) is the only shape ever tried
-before and is still pending; its first fire is due ~11:04.
+suspects was the problem. `hb3` (`delay 600`, `repeat_period 10`) fired too, with its first hop at exactly 600 s, and
+0.9.9's time-anchored rfence fired at :00:16 on a 10-minute boundary. Every repeat shape this
+project has ever attempted works on this watch; the earlier "repeat alarms never fire"
+conclusion was an artifact of arming order (a sweep after the arm) and of concluding inside
+one period.
 
 **0.9.12 build:** (`dist/10262217-Notify_Relay_0.9.12-*.zab`, file
 `10262217-Notify_Relay-0.9.12-20261110104801.zab`). 0.9.11 was installed and ran (its wake
