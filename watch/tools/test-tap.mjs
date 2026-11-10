@@ -438,7 +438,9 @@ console.log('\na tap cannot end the schedule')
   const st = await runWake(w, TAP)
   const table = logs(st, 'tap.table')
   check('the tap reports the alarm table it left behind', table.length === 1, String(table.length))
-  check('...which is the heartbeat it did not cancel', table[0] && Array.isArray(table[0].json.ids), JSON.stringify(table[0] && table[0].json))
+  const t = table[0] && table[0].json
+  check('it reports the table before and after the cancel', t && Array.isArray(t.before) && Array.isArray(t.after), JSON.stringify(t))
+  check('it names the carrier id it cancelled', t && t.carry === 500, JSON.stringify(t && t.carry))
 
   // The table empty at that moment: put the heartbeat back before the context dies.
   const empty = makeWatch()

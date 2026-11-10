@@ -1103,3 +1103,25 @@ wake leaves no trace anywhere - indistinguishable from "the alarm never fired".
 Rule, now written into the code: on this platform a wake has ~600 ms and no timers, so **the
 log/beacon frames go out before any request, and any alarm-API work goes after the flush inside
 a try/catch**. A diagnostic must never be able to cost the thing it is diagnosing.
+
+### `set()` returning 0 was treated as success — and that 0 went straight into `cancel()`
+
+Two of my own bugs, found by 0.9.16 producing `tap.sent` but no `tap.table`, and the heartbeat
+dying again after the tap:
+
+1. **`tap.table` was queued but never flushed** unless the table was empty, so the diagnostic
+   that was supposed to explain this never arrived. Twice now a diagnostic has been queued on a
+   branch that does not flush; every wake now ends with exactly one unconditional flush.
+2. **`trySet()` accepted `0` as a valid id.** The API documents "returns 0 on failure", and the
+   test was `id !== undefined && id !== null && id !== false` — 0 passes all three. A failed arm
+   therefore looked like `{ok: true, id: 0}`, and the tap success path then called
+   `cancelAlarm(0)`, i.e. `alarmMgr.cancel(0)`. That is the leading explanation for the heartbeat
+   record vanishing within seconds of every *successful* tap: the success path is the only path
+   that ever calls `cancelalarm`, which is exactly when it started happening (11:41:51, the
+   first success since 08:52), and it never happened on unanswered taps, which skip the cancel.
+
+Fixed: `trySet` requires a positive numeric id, `cancelAlarm` refuses anything `<= 0`, and the
+tap path now reports `tap.table {carry, before, after}` — the carrier id it cancelled plus the
+table on either side of the cancel — with one guaranteed flush. If `before` contains the
+heartbeat and `after` does not, the cancel is the killer and the fix is confirmed; if both
+contain it, the record dies later and `exit()` is back as the suspect.

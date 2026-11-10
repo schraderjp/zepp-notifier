@@ -9,7 +9,18 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.16** (code 83) is **built, not installed**
+**0.9.17** (code 84) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.17-20261110120317.zab`). 0.9.16's tap worked (`tap.sent`,
+lag 920 ms) but produced no `tap.table` and the heartbeat died again. Two causes, both mine: the
+diagnostic was queued on a branch that never flushed, and `trySet()` accepted `0` as a valid id
+even though `set()` returns 0 on failure - so a failed carrier arm looked like
+`{ok: true, id: 0}` and the success path called `cancelAlarm(0)`, i.e. `alarmMgr.cancel(0)`.
+`cancelAlarm` is called only on the success path, which is exactly when the heartbeat started
+dying. 0.9.17 requires a positive id, refuses `cancel(<= 0)`, reports
+`tap.table {carry, before, after}` around the cancel, flushes once unconditionally, and re-arms
+the heartbeat if nothing but the cancelled carrier is left.
+
+**0.9.16** (code 83):
 (`dist/10262217-Notify_Relay-0.9.16-20261110115615.zab`). 0.9.15 produced **no tap telemetry at
 all**, which 0.9.14 had produced reliably. The one thing 0.9.14 changed on that path was the
 order: it flushed the log frames *after* dispatching the ack request, so a synchronous failure

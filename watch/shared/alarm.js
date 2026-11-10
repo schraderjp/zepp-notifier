@@ -247,8 +247,14 @@ export function repeatTypeInfo() {
 function trySet(alarm) {
   try {
     const id = alarmMgr.set(alarm)
-    const ok = id !== undefined && id !== null && id !== false
-    return ok ? { ok: true, id } : { ok: false, err: 'set() returned ' + String(id) }
+    // `0` IS A FAILURE. The API documents "returns 0 on failure", and the old test
+    // (`id !== undefined && id !== null && id !== false`) accepted 0 because 0 is none of those.
+    // A caller then holds `{ok: true, id: 0}` and, on the tap success path, hands 0 to
+    // cancelAlarm - measured 2026-11-10: every tap that reached that path took the heartbeat
+    // record with it. A failed arm must be visible as a failure, never as id 0.
+    const n = Number(id)
+    const ok = !isNaN(n) && n > 0
+    return ok ? { ok: true, id: n } : { ok: false, err: 'set() returned ' + String(id) }
   } catch (e) {
     return { ok: false, err: String((e && (e.message || e.reason)) || e) }
   }
@@ -287,7 +293,9 @@ export function setCarryAlarm(param, delaySec) {
 // an ack the relay and the phone both collapse).
 export function cancelAlarm(id) {
   const n = Number(id)
-  if (isNaN(n)) return false
+  // Never cancel on a value that is not a real alarm id. 0 is set()'s documented failure code,
+  // and cancel(0) on this platform reaches past the record the caller meant to cancel.
+  if (isNaN(n) || n <= 0) return false
   try {
     alarmMgr.cancel(n)
   } catch (e) {

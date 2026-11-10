@@ -597,29 +597,45 @@ function tap(raw) {
     flushLogs()
     sendAck(i, a, ts, (sent) => {
       if (sent) {
-        // Answered: stop the retry chain. If the cancel itself fails the alarm fires once
-        // more and re-sends an answer both ends collapse.
-        if (carry && carry.ok) cancelAlarm(carry.id)
-        queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
-        devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
-        // Flush the outcome BEFORE touching the alarm API: 0.9.15 did the reverse and produced
-        // no tap telemetry at all, and this context is on a 600 ms budget - the frames go out
-        // first, everything optional after.
-        flushLogs()
-        // MEASURED 2026-11-10 11:41:51: the first tap to reach this branch was followed within
-        // five seconds by the heartbeat record vanishing, and four minutes of silence until the
-        // page was opened. Whether cancelAlarm, exit() or the OS did it is unknown, so record
-        // what is left and restore the heartbeat if it is gone. Everything here is guarded: no
-        // diagnostic may cost the tap itself.
+        // Everything that must be known is captured as telemetry and flushed ONCE at the end:
+        // 0.9.16 queued the table but only flushed it on one branch, so the diagnostic never
+        // arrived and the disappearance stayed unexplained for another flash.
+        const carryId = carry && carry.ok ? Number(carry.id) : 0
+        let before = null
+        let after = null
         try {
-          const table = pendingIds()
-          queueLog({ t: MSG.LOG, e: 'tap.table', i, a, ids: table })
-          if (!table.length) {
+          before = pendingIds()
+        } catch (e) {}
+        // Answered: stop the retry chain. Only on a real id: cancel(0) is what took the
+        // heartbeat with it (see trySet in shared/alarm.js).
+        if (carryId > 0) cancelAlarm(carryId)
+        try {
+          after = pendingIds()
+        } catch (e) {}
+        queueLog({
+          t: MSG.LOG,
+          e: 'tap.table',
+          i,
+          a,
+          carry: carryId,
+          before: before,
+          after: after,
+        })
+        // The schedule must survive a press whatever removed it: if nothing but the carrier we
+        // just cancelled is left, put the heartbeat back before this context dies.
+        try {
+          const others = (after || []).filter((id) => Number(id) !== carryId)
+          if ((after || []).length >= 0 && others.length === 0) {
             const hb = setHeartbeatAlarm()
-            queueLog({ t: MSG.LOG, e: 'tap.rearm', ok: hb && hb.ok ? 1 : 0 })
-            flushLogs()
+            queueLog({ t: MSG.LOG, e: 'tap.rearm', ok: hb && hb.ok ? 1 : 0, id: hb && hb.ok ? hb.id : 0 })
           }
         } catch (e) {}
+        queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
+        devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
+        // One flush, always, on both branches. Twice now a diagnostic was queued on a branch
+        // that never flushed, and a wake with no frames is indistinguishable from one that
+        // never ran.
+        flushLogs()
       } else {
         flushLogs()
       }
