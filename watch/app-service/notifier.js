@@ -47,6 +47,7 @@ import { MSG, decodeActionParam, encodeActionParam, normalizeNotification } from
 import {
   pendingIds,
   cancelAllTickAlarms,
+  setHeartbeatAlarm,
   setCarryAlarm,
   cancelAlarm,
 } from '../shared/alarm'
@@ -594,6 +595,25 @@ function tap(raw) {
         if (carry && carry.ok) cancelAlarm(carry.id)
         queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
         devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
+
+        // MEASURED 2026-11-10 11:41:51: the first tap to reach this branch since 08:52 - the
+        // one 0.9.14 finally made possible - was followed within five seconds by the heartbeat
+        // record (4631) vanishing from the OS table. No wake fired for four minutes until the
+        // page was opened and self-healed. Whether our cancel, the exit() a few lines below, or
+        // the OS itself did it is not knowable from the relay log, so do both things that are
+        // correct regardless: record the table here, and put the heartbeat back if it is gone.
+        // A tap answering a notification must never be able to end the schedule.
+        let table = []
+        try {
+          table = pendingIds()
+        } catch (e) {}
+        queueLog({ t: MSG.LOG, e: 'tap.table', i, a, ids: table })
+        if (!table.length) {
+          // Read-only rule kept: this is not a cadence write, it is restoring the one record the
+          // page is supposed to own after something removed it.
+          const hb = setHeartbeatAlarm()
+          queueLog({ t: MSG.LOG, e: 'tap.rearm', ok: hb && hb.ok ? 1 : 0 })
+        }
       }
       flushLogs()
       quit(sent ? 'tap' : 'tap-unacked')

@@ -1047,3 +1047,43 @@ Three fixes in 0.9.14, in increasing order of how much they would have helped to
 
 The diagnostic rule this adds: **`tap.ack-sent` with no `tap.sent` = the reply leg is broken;
 neither = the wake never got a link.** Before, both looked identical.
+
+### A successful tap killed the heartbeat — measured, mechanism still unknown
+
+2026-11-10, 0.9.14, the first install where the ack reply came back (`tap.sent lag 660 ms` at
+11:41:51 — the side try/catch fix works). Within five seconds the heartbeat record **4631**
+vanished from the OS table:
+
+```
+11:41:46  tick.wake  pending 1  ids [4631]     <- heartbeat fired normally
+11:41:51  tap.received / tap.ack-sent / tap.sent
+          ...4 minutes of total silence, no tick.wake at all...
+11:45:39  probe.answered (page opened)
+11:47:39  tick.wake  pending 1  ids [4633]    <- page self-heal armed a new heartbeat
+```
+
+The correlation is exact and it only became possible today: this is the first tap since 08:52
+to reach the success branch, where `cancelAlarm(carrier)` runs and then `quit()` calls
+`appService.exit()`. Earlier taps never got that far, so they never exercised either call.
+
+Three candidates, not yet separable from the relay log:
+
+1. `appService.exit()` called from a **notification-action (`onEvent`) context** ends the
+   service in a way that also drops the repeating alarm bound to it. Single-execution wakes
+   (`onInit`) call the same `exit()` every minute without harm, which is what makes the
+   distinction plausible.
+2. `cancelAlarm(carrierId)` cancelled the wrong id. Ruled down but not out: the carry id is
+   remembered in the tap context and `cancelAlarm` cancels exactly that number.
+3. The OS dropped the record on its own, coincidentally at that moment - the same
+   accept-then-vanish behaviour seen with other shapes.
+
+Whatever the cause, two things are now true in 0.9.15 and neither depends on knowing it:
+
+* the tap path records the table it leaves behind (`tap.table {ids}`) and, if it is empty,
+  re-arms the heartbeat before the context dies (`tap.rearm`), because a press answering a
+  notification must never be able to end the schedule;
+* the page's self-heal asks a second question - "has the id *I* armed fallen out of the
+  table?" - instead of only "is the table empty?", so a page open recovers this case too.
+
+If `tap.table` shows `ids: [4631]` in the next build, the record survived the tap and the
+disappearance is later or external; if it shows `[]`, our own wake removed it.

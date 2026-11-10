@@ -39,6 +39,7 @@ import {
   BG_PERMISSION,
   ALARM_PERMISSION,
   ensureBgPermission,
+  armedIds,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 
@@ -138,7 +139,14 @@ Page({
     // the one repeating record is gone - uninstall leftovers, a cleared alarm table, or a
     // reboot where store:true did not hold. A non-empty table is left strictly alone: the
     // heartbeat repeats forever, so re-arming on every open would mint duplicates.
-    if (isArmed() && pendingIds().length === 0) {
+    // Self-heal the heartbeat. Missing is not only "the table is empty": measured 2026-11-10,
+    // a successful tap was followed by the heartbeat record disappearing while the app stayed
+    // armed, so the table was empty for four minutes until this page ran. So ask both questions:
+    // is the table empty, or has the id THIS context remembers arming fallen out of it?
+    const pending = pendingIds()
+    const mine = armedIds()
+    const missing = pending.length === 0 || (mine.length > 0 && !mine.some((id) => pending.indexOf(id) >= 0))
+    if (isArmed() && missing) {
       armNotifier((r) => {
         appendDevLog('hb self-heal ' + JSON.stringify(r).slice(0, 90))
         this.refresh()

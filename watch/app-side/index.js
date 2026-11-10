@@ -31,7 +31,7 @@ const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
 // Reported with side.online so the trace names the build that produced it. Keep it
 // equal to app.json's version.name: the side ships inside the same package.
-const SIDE_VERSION = '0.9.14'
+const SIDE_VERSION = '0.9.15'
 
 // Installing a build starts a NEW side-service instance and never stops the old one
 // (`onDestroy` never fires; force-stop does not kill them - docs/findings.md). Measured

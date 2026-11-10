@@ -272,6 +272,8 @@ async function runWake(watch, param) {
       },
       repeatMinuteValue: () => 1,
       repeatTypeInfo: () => ({ rm: 1, src: 'const' }),
+      setHeartbeatAlarm: () => ({ ok: true, id: 777 }),
+      pendingIds: () => state.pending.slice(),
       setHeartbeat: (v) => ({ ok: true, id: 900 + (v && v.tag ? 1 : 0), tag: v && v.tag }),
       setHeartbeatEnd: () => ({ ok: true, id: 999 }),
       setRepeatFence: (periodMin) => {
@@ -425,6 +427,25 @@ console.log('\ntap: a dispatch is reported even when the reply never comes back'
   // reply from costing three hours of wakes for a press that was answered instantly.
   const capped = await runWake(makeWatch(), 'retry=1&i=18-93cebd&a=taken&ts=1&n=12')
   check('the ladder stops at 12 attempts', capped.carries.length === 0, String(capped.carries.length))
+}
+
+console.log('\na tap cannot end the schedule')
+{
+  // Measured 2026-11-10: the first tap that reached the success branch was followed by the
+  // heartbeat record vanishing, leaving the app armed and silent until the page was opened.
+  // Whatever removed it, a tap must restore it and must say what it saw.
+  const w = makeWatch()
+  const st = await runWake(w, TAP)
+  const table = logs(st, 'tap.table')
+  check('the tap reports the alarm table it left behind', table.length === 1, String(table.length))
+  check('...which is the heartbeat it did not cancel', table[0] && Array.isArray(table[0].json.ids), JSON.stringify(table[0] && table[0].json))
+
+  // The table empty at that moment: put the heartbeat back before the context dies.
+  const empty = makeWatch()
+  empty.state.pending = []
+  const lost = await runWake(empty, TAP)
+  const rearm = logs(lost, 'tap.rearm')
+  check('a tap restores a heartbeat that is gone', rearm.length === 1 && rearm[0].json.ok === 1, JSON.stringify(rearm[0] && rearm[0].json))
 }
 
 console.log('\nheartbeat: the schedule is one repeating record the OS owns')

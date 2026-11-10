@@ -9,7 +9,17 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.14** (code 81) is **built, not installed**
+**0.9.15** (code 82) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.15-20261110114832.zab`). 0.9.14 fixed the tap receipt
+(`tap.sent lag 660 ms` on the first try), but that first successful tap was followed within
+five seconds by the heartbeat record vanishing: four minutes of complete silence until the page
+was opened and self-healed. 0.9.15 makes that impossible-in-effect: the tap path records the
+alarm table (`tap.table`) and re-arms the heartbeat if it is empty (`tap.rearm`), and the page
+also self-heals when the id it armed has fallen out of the table, not only when the table is
+empty. The mechanism (our `cancelAlarm`, `exit()` from an `onEvent` context, or the OS) is
+still unidentified; `tap.table` will say whether our own wake removed it.
+
+**0.9.14** (code 81):
 (`dist/10262217-Notify_Relay-0.9.14-20261110113918.zab`). It fixes the tap-receipt bug
 measured today: since 0.9.5 the watch has not received the side's ack reply, so every press
 retried its carrier ladder for up to three hours while the relay had recorded the answer on
