@@ -823,3 +823,59 @@ sample's zeroed `week_days`/`start_time`/`end_time` fields, the anchor and the p
 `repeatTypeArray = ["ONCE","MINUTE",...]` is indexed by `repeat_type`, so MINUTE is 1, i.e.
 exactly what our fallback has always sent - and changing the exit path in the same build would
 confound any repeat result. One variable at a time.
+
+### A 24/7 app is a *single repeating alarm* — and our "repeat never fires" is wrong
+
+Nieole/water-reminders (Zepp OS 6, min API level 4.0, same as us) is built entirely on one
+repeating alarm, and its docs record a real-device measurement of the shape we concluded was
+impossible on this firmware. Its ADR-0004, translated:
+
+> Set **one** `store: true` repeating alarm and never re-set it:
+> `set({url:'app-service/tick', delay:600, repeat_type:REPEAT_MINUTE, repeat_period:10, store:true})`
+>
+> Measured (T-Rex 3, 2026-08-07): first hop after registration **exactly 60 s**;
+> `repeat_period` = the period in minutes; **survives reboot**; single execution 46-111 ms of
+> the 600 ms budget; `param` arrives in `onInit(params)`; `getAllAlarms()` -> `[id]`.
+
+And its rejection of chained scheduling is our last two days, written down in advance:
+
+> In the chain model the existence of the next reminder depends entirely on the previous wake
+> successfully executing `set()`. If any link breaks - the 600 ms budget (the wake must
+> serially read storage, read weather, read sport data, compute, notify, cancel, set, write
+> back), a `cancel()` that succeeds while `set()` fails, a cold start eating the budget -
+> then **no alarm is left in the system to wake the app**. Reminders stop permanently,
+> silently, and **there is no self-healing path, because self-healing itself requires being
+> woken**.
+
+That is exactly our 5.2 h outage: a chain that is one alarm deep, and one missed delivery ends
+it. It also explains why the fence only ever degraded the cadence instead of restoring it.
+
+**The one field that differs from our silent records**: theirs passes **no `repeat_duration`**.
+Everything else matches our 0.9.7 fence (`delay: 600`, `repeat_type`, `repeat_period: 10`,
+`store: true`) except the parameter string and that field. The docs list it as optional with
+default 1 ("reminders per period") - and our 0.9.7/0.9.9 records, which never fired, both
+passed it explicitly.
+
+So 0.9.11 arms three records from the page, isolating exactly that:
+
+| tag | shape | what it settles |
+|---|---|---|
+| `hb1` | their record verbatim: `delay 60`, `repeat_period 1`, no `repeat_duration` | repeat alarms work here at all |
+| `hb2` | the same plus `repeat_duration: 1` | whether that field is what has been killing ours |
+| `hb3` | their production grid: `delay 600`, `repeat_period 10` | the real duty cycle |
+
+A `tick.hb` event names the variant that fired and carries `rm`/`rmSrc`/`api`/`pending`, and the
+wake **arms nothing** (the OS repeats it) and still polls. A sweeper at +65 min
+(``hbe=1``) cancels everything and restores chain + fence, so a silent result leaves nothing
+armed. Their architectures' other habits are worth adopting if this works: the service is
+100% read-only (the page is the only alarm writer), and `getAllAlarms()` returns **only this
+app's** alarms, so the table itself - not storage - is the source of truth for self-healing.
+
+Two more pitfalls of theirs that touch our design, both measured there:
+
+* **P-18: while the page is in the foreground, alarm-driven App Services do not run**, and
+  resume as soon as the screen goes off. Any "the chain died" reading taken while the app is
+  open is therefore meaningless.
+* **P-15: a notification action pointing at an `app-service` does nothing when tapped, and
+  raises no error** - because the screen is on when you tap. That is a third mechanism for a
+  silently lost tap; their recipe is to point actions at a page and pass the work in `param`.

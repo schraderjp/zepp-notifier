@@ -52,7 +52,6 @@ import {
   setCarryAlarm,
   cancelAlarm,
   setFenceAlarm,
-  setSweepEnd,
   repeatTypeInfo,
 } from '../shared/alarm'
 // `@zos/app-service` IS available inside an App Service (documented: the module is
@@ -426,32 +425,33 @@ function tick(param) {
   // wake must never re-arm it and never touch the chain. Checked before `fence=1` because
   // 'rfence=1' contains 'fence=1'.
   const repeatFence = raw.indexOf('rfence=1') >= 0
-  const sweepAt = raw.indexOf('rt=') >= 0
-  const sweepEnd = raw.indexOf('sweepend=1') >= 0
-  const fence = !repeatFence && !sweepAt && raw.indexOf('fence=1') >= 0
+  const heartbeat = raw.indexOf('hb=') >= 0
+  const heartbeatEnd = raw.indexOf('hbe=1') >= 0
+  const fence = !repeatFence && !heartbeat && !heartbeatEnd && raw.indexOf('fence=1') >= 0
   const rtInfo = repeatTypeInfo()
   let chain = null
   let armF = null
-  if (sweepEnd) {
-    // End of the repeat_type sweep: cancel every alarm we own and restore the working pair,
-    // so a failed experiment leaves nothing armed. This wake is the only one allowed to tear
-    // the table down.
+  if (heartbeatEnd) {
+    // End of the heartbeat experiment: cancel every alarm we own and restore the working pair.
+    // This is the only wake allowed to tear the table down.
     cancelAllTickAlarms()
     if (armed) {
       chain = armNextOneshot(false)
       armF = setFenceAlarm()
     }
-    queueLog({ t: MSG.LOG, e: 'tick.sweepend', chain: chainVerdict(chain), fenceOk: armF && armF.ok ? 1 : 0 })
-  } else if (sweepAt) {
-    // One `repeat_type` variant fired. Name it, do not re-arm it, do not touch the chain.
+    queueLog({ t: MSG.LOG, e: 'tick.hbe', chain: chainVerdict(chain), fenceOk: armF && armF.ok ? 1 : 0 })
+  } else if (heartbeat) {
+    // A heartbeat record fired. That alone settles the question we have been asking for two
+    // days - but do not re-arm it (the OS repeats it) and do not touch the chain, so a working
+    // experiment is not turned into a duplicate-alarm storm.
     queueLog({
       t: MSG.LOG,
-      e: 'tick.fence',
-      kind: 'sweep',
-      rt: paramValue(raw, 'rt'),
+      e: 'tick.hb',
+      hb: paramValue(raw, 'hb'),
       rm: rtInfo.rm,
       rmSrc: rtInfo.src,
       pending: pendingNow.length,
+      api: apiLevel(),
     })
   } else if (repeatFence) {
     // The measurement: no re-arm, one poll, and `rm` reports the repeat_type value we sent.
@@ -545,6 +545,7 @@ function tick(param) {
     conn: connected,
     // Readable in the server trace, which beats squinting at the watch.
     fence: fence || repeatFence ? 1 : 0,
+    hb: heartbeat ? 1 : 0,
     pending: pendingNow.length,
     chain: chainVerdict(chain),
     chainId: chain && chain.id !== undefined ? chain.id : -1,

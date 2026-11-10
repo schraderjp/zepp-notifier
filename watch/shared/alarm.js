@@ -581,81 +581,60 @@ export function setRepeatFence(periodMin) {
   return result
 }
 
-// --- the repeat-alarm sweep (a time-boxed experiment) --------------------------
+// --- the heartbeat experiment --------------------------------------------------
 //
-// The official sample (zeppos-samples, application/3.0/3.0-feature/pages/newAlarm.js) settles
-// the `repeat_type` question and moves the suspicion somewhere else:
+// Nieole/water-reminders is a maintained app (Zepp OS 6, min API level 4.0, same as us) whose
+// entire architecture is a single repeating "heartbeat" alarm, and its docs record a real-device
+// measurement (T-Rex 3, 2026-08-07) of the exact shape we concluded was impossible:
 //
-//   const repeatTypeArray = ["ONCE","MINUTE","HOUR","DAY","WEEK","MONTH","YEAR"]
-//   repeat_text.setProperty(TEXT, repeatTypeArray[alarmObj.repeat_type])
-//   alarmObj.repeat_type = value_index          // the picker writes the index straight in
+//   set({ url: 'app-service/tick', delay: 600, repeat_type: REPEAT_MINUTE,
+//         repeat_period: 10, store: true })          // registered once, never re-set
 //
-// so MINUTE is **1**, which is exactly what our fallback has always sent. The constant was
-// never the problem. What the sample does and we do not: it always passes THREE extra fields -
-// `week_days: 0, start_time: 0, end_time: 0` - even for non-weekly types, and it always
-// schedules with `time` (absolute UTC seconds), never `delay`. The docs say start_time/end_time
-// bound when a repeat reminder "takes effect"; a record with a repeat_type but no window is a
-// plausible "accepted, listed, never scheduled" candidate - which is exactly what we measured.
+//   * first hop after registration: exactly 60 s   * repeat_period == minutes per period
+//   * survives reboot with store: true             * single execution 46-111 ms of the 600 budget
+//   * param arrives in onInit(params)              * getAllAlarms() -> [id]
 //
-// So the sweep is a 2x2 isolation around the sample's form, each record tagged:
-//   s1  time  period 1  with zeros   <- the sample's field set, verbatim
-//   s2  time  period 1  no zeros     <- isolates the zeroed week/window fields
-//   s3  delay period 1  with zeros   <- isolates the anchor
-//   s4  time  period 10 with zeros   <- the period we have already failed with twice
+// The decisive detail: their record passes **no `repeat_duration`**, which is the one field our
+// silent 0.9.7/0.9.9 records always sent (docs list it as optional, default 1 - "reminders per
+// period"). Everything else we tried matches theirs.
 //
-// Any one firing names the axis. The sweeper (+65 min) cancels the experiment and restores
-// chain + fence, so a failed sweep leaves nothing armed.
-export const SWEEP_VARIANTS = [
-  { tag: 's1', useTime: true, period: 1, zeros: true },
-  { tag: 's2', useTime: true, period: 1, zeros: false },
-  { tag: 's3', useTime: false, period: 1, zeros: true },
-  { tag: 's4', useTime: true, period: 10, zeros: true },
+// So the sweep is three records, isolating exactly that:
+//   hb1  their record verbatim:  delay 60,  period 1,  no repeat_duration
+//   hb2  same, plus repeat_duration: 1            <- the only difference, the suspect
+//   hb3  their production grid: delay 600, period 10, no repeat_duration
+export const HEARTBEAT_VARIANTS = [
+  { tag: 'hb1', delay: 60, period: 1 },
+  { tag: 'hb2', delay: 60, period: 2, duration: 1 },
+  { tag: 'hb3', delay: 600, period: 10 },
 ]
 
-function boundaryFireAt(periodMin) {
-  const nowSec = Math.floor(Date.now() / 1000)
-  const secToMinute = 60 - (nowSec % 60)
-  const minuteOfHour = Math.floor((nowSec % 3600) / 60)
-  let minutesToBoundary = periodMin - (minuteOfHour % periodMin) - 1
-  if (minutesToBoundary < 0) minutesToBoundary += periodMin
-  return nowSec + 15 + secToMinute + minutesToBoundary * 60
-}
-
-export function setSweepAlarm(variant) {
+export function setHeartbeat(variant) {
   const v = variant || {}
-  const period = Math.max(1, Math.min(30, Math.floor(Number(v.period) || 1)))
-  const fireAt = boundaryFireAt(period)
+  const period = Math.max(1, Math.min(30, Math.floor(Number(v.period) || 10)))
   const alarm = {
     url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&sv=' + String(v.tag || '?'),
-    store: STORE,
+    param: 'via=alarm&mode=oneshot&hb=' + String(v.tag || '?'),
+    delay: clampDelay(Number(v.delay) || period * 60),
     repeat_type: repeatMinuteValue(),
     repeat_period: period,
-    repeat_duration: 1,
+    store: STORE,
   }
-  if (v.useTime === false) alarm.delay = clampDelay(fireAt - Math.floor(Date.now() / 1000))
-  else alarm.time = fireAt
-  if (v.zeros) {
-    // Verbatim from the official sample, including for non-weekly types.
-    alarm.week_days = 0
-    alarm.start_time = 0
-    alarm.end_time = 0
-  }
+  // hb2 is the control for the one field we have always sent and they never do.
+  if (v.duration) alarm.repeat_duration = v.duration
   const result = trySet(alarm)
   if (result.ok) rememberId(result.id)
   result.tag = String(v.tag || '?')
-  result.fireAt = fireAt
   result.period = period
-  result.shape = (v.useTime === false ? 'delay' : 'time') + (v.zeros ? '+zeros' : '')
+  result.duration = v.duration || 0
   return result
 }
 
-// +65 min: cancel everything (cancelAllTickAlarms sweeps the table when the per-context
-// registry is empty, which it always is in a fresh context) and let the caller re-arm.
-export function setSweepEnd(delaySec) {
+// End of the experiment: cancel everything and let the caller restore the working pair, so a
+// silent heartbeat leaves nothing armed.
+export function setHeartbeatEnd(delaySec) {
   const result = trySet({
     url: NOTIFIER_SERVICE,
-    param: 'via=alarm&mode=oneshot&sweepend=1',
+    param: 'via=alarm&mode=oneshot&hbe=1',
     store: STORE,
     delay: clampDelay(Number(delaySec) || 3900),
   })

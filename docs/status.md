@@ -9,7 +9,14 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.10** (code 77) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.10-*.zab`).
+**0.9.11** (code 78) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.11-*.zab`).
+It arms three repeating-alarm records copied from a 24/7 app (Nieole/water-reminders, measured
+on hardware: first hop 60 s, `repeat_period` = minutes, survives reboot) to settle whether our
+repeat records were malformed rather than unsupported: `hb1` their record verbatim (no
+`repeat_duration`), `hb2` the same plus the field we always sent, `hb3` their production grid.
+Watch for `tick.hb` in `events.jsonl`; a sweeper at +65 min restores chain + fence.
+
+**0.9.10** (code 77):
 It calls `appService.exit()` at every exit point, which is the leading explanation for the
 hours-long silences: a single-execution service that returns without exiting can hold the one
 background-service slot, after which alarms fire into a service the OS cannot start (measured

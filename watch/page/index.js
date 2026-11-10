@@ -39,9 +39,9 @@ import {
   BG_PERMISSION,
   ALARM_PERMISSION,
   ensureBgPermission,
-  setSweepAlarm,
-  setSweepEnd,
-  SWEEP_VALUES,
+  setHeartbeat,
+  setHeartbeatEnd,
+  HEARTBEAT_VARIANTS,
   repeatTypeInfo,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
@@ -138,6 +138,7 @@ Page({
 
     this.refresh()
     this.probe(true)
+    this.maybeHeartbeat()
 
     // Ask once, on open. This is the only moment a system permission prompt can
     // appear, and everything downstream (arming, alarm delivery, start()) is
@@ -147,6 +148,18 @@ Page({
       appendDevLog('perm ' + JSON.stringify(p))
       this.refresh()
     })
+  },
+
+  maybeHeartbeat() {
+    const marker = '0.9.11'
+    if (!isArmed()) return
+    if (localStorage.getItem('relay_hb') === marker) return
+    localStorage.setItem('relay_hb', marker)
+    const info = repeatTypeInfo()
+    const armed = HEARTBEAT_VARIANTS.map((v) => setHeartbeat(v)).filter((r) => r && r.ok)
+    const end = setHeartbeatEnd(3900)
+    log('hb: ' + armed.length + ' armed, rm=' + info.rm + ' src ' + info.src)
+    this.hint.setProperty(ui.prop.TEXT, 'heartbeat test: ' + armed.length + ' armed, rm=' + info.rm)
   },
 
   refresh() {
@@ -300,6 +313,9 @@ Page({
       } catch (e) {}
       // Does the record survive the next couple of seconds? A set() that is
       // accepted and then dropped looks identical to one that never fired.
+      // Arm the one-off heartbeat experiment on the same press, so one action is enough
+      // whether or not the page was opened while armed.
+      this.maybeHeartbeat()
       const armedId = result.id
       setTimeout(() => {
         const still = pendingIds().indexOf(Number(armedId)) >= 0

@@ -269,6 +269,8 @@ async function runWake(watch, param) {
       },
       repeatMinuteValue: () => 1,
       repeatTypeInfo: () => ({ rm: 1, src: 'const' }),
+      setHeartbeat: (v) => ({ ok: true, id: 900 + (v && v.tag ? 1 : 0), tag: v && v.tag }),
+      setHeartbeatEnd: () => ({ ok: true, id: 999 }),
       setRepeatFence: (periodMin) => {
         const entry = { periodMin: periodMin === undefined ? 10 : periodMin, id: state.nextAlarmId++ }
         state.repeatFences.push(entry)
@@ -445,6 +447,29 @@ console.log('\nfence(repeat): the OS repeats it, so the wake must not re-arm any
   check('tick.fence says kind:repeat', tel.kind === 'repeat', JSON.stringify(tel))
   check('tick.fence reports the repeat_type value we sent', tel.rm === 1, JSON.stringify(tel))
   check('a repeat-fence wake still delivers', reqs(st, 'poll').length === 1, JSON.stringify(reqs(st, 'poll')))
+}
+
+console.log('\nheartbeat: a repeat record that fires names itself and arms nothing')
+{
+  // The one measurement that decides firmware-vs-implementation for repeat alarms.
+  const run = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=hb1')
+  const hb = (logs(run, 'tick.hb')[0] || {}).json
+  check('a heartbeat wake reports tick.hb', !!hb, JSON.stringify(hb || null))
+  check('it names which variant fired', hb && hb.hb === 'hb1', JSON.stringify(hb && hb.hb))
+  check('it reports the repeat_type and provenance', hb && hb.rm === 1 && hb.rmSrc === 'const', JSON.stringify(hb))
+  check('it does not arm anything (the OS repeats it)', run.armedCalls === 0 && run.fences.length === 0, String(run.armedCalls))
+  check('it still polls, so delivery continues', reqs(run, 'poll').length === 1, String(reqs(run, 'poll').length))
+  check('it exits', run.exits === 1, String(run.exits))
+
+  const poll = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hb=hb3')
+  check('every variant is distinguishable', (logs(poll, 'tick.hb')[0] || {}).json.hb === 'hb3', '')
+
+  // End of the experiment restores the working pair and leaves no experiment alarm behind.
+  const end = await runWake(makeWatch(), 'via=alarm&mode=oneshot&hbe=1')
+  const done = (logs(end, 'tick.hbe')[0] || {}).json
+  check('the sweeper reports itself', !!done, '')
+  check('the sweeper re-arms the chain', end.armedCalls === 1, String(end.armedCalls))
+  check('the sweeper re-arms the fence', end.fences.length === 1, String(end.fences.length))
 }
 
 console.log('\nexit: every terminal path releases the service slot')
