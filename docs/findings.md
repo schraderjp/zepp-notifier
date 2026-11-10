@@ -1211,3 +1211,33 @@ nothing at all with no error, and that their production app points actions at a 
 
 Cost, accepted: the app opens when a button is pressed. The official Zepp water app makes the
 same trade.
+
+### RESOLVED 2026-11-10 12:34: the page answers the press, and the schedule survives it
+
+First press on 0.9.20 (buttons aimed at `page/index`):
+
+```
+12:33:57  notify.queued  36-1e8deb
+12:34:13  notify.rendered                          (+16 s)
+12:34:17  tap.received  via: request    <- arrived
+12:34:17  ack.received  appended: true
+12:34:17  ack.sent      lag 920 ms, transit_ms 908
+12:35:12  tick.wake  pending 1  ids [4652]         <- heartbeat untouched
+```
+
+Three things this settles:
+
+* **the press reached the relay in 908 ms** with no retry ladder and no retries logged since;
+* the page-armed carrier alarm was cancelled on success - `pending` stayed at exactly 1 through
+  every subsequent wake, so no carrier leaked;
+* the heartbeat never moved: one id (4652), 60 s gaps, `pending: 1` on every wake after the press.
+
+Note also what is *absent*: there is no device-side `tap.received` beacon, because the service
+never ran - the page answered. That is the expected signature of this design, and the mirror of
+the failure signature earlier (a beacon with no ack, or neither).
+
+Standing summary of the six ways a press could be lost, all now either fixed or bypassed: no BLE
+link; the side not running; the side's reply lost (fixed by the try/catch); `exit()` from an
+action context taking the repeating alarm (fixed by not exiting from action contexts); the action
+being routed to a page that had no `onInit` (fixed); and an action aimed at an app-service doing
+nothing at all (bypassed by aiming at the page, which is what the reference app does).

@@ -9,7 +9,12 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.20** (code 87) is **built, not installed**
+**0.9.20** (code 87) is **installed and working** — the first build where a press is answered
+reliably end to end. Measured 12:34: `notify.rendered` → press → `tap.received via: request` →
+`ack.received appended: true` → `ack.sent` in 920 ms, with the page-armed carrier cancelled
+(`pending` stayed 1) and the heartbeat record (4652) untouched at a clean 60 s. Buttons now
+target `page/index`, so the app opens on a press; the page answers over the probe's BLE path and
+the service keeps handling carrier retries.
 (`dist/10262217-Notify_Relay-0.9.20-20261110122922.zab`). The device log showed
 `tap 34-95c8a4/yes try=1` with `tap carry=...`: the press wake ran and armed its carrier, then
 could not reach the phone at all, while the page's own BLE probe worked throughout. Rather than
