@@ -1182,3 +1182,32 @@ mini program is resident is plausibly delivered to the **page**, not the service
 Note this is the fifth distinct mechanism found for a silently lost press: no link, the
 side-down case, the reply-leg loss, `exit()` from an action context, and now the action being
 routed to the page. Each needed different evidence to see.
+
+### 0.9.18: the press wake runs, then cannot reach the phone — so stop aiming buttons at the service
+
+Device log for the failing press: `tap 34-95c8a4/yes try=1`, with `tap carry=...` above it and
+nothing at the relay - `any tap telemetry ever for 34-95c8a4: []`.
+
+`try=1` is the giveaway: a retry wake only exists because the press wake armed a carrier first,
+and that is an alarm-API call needing no BLE. So the press wake **did** run, **did** arm the
+carrier, and then produced nothing - no `tap.received` beacon, no ack. The retry wake an later
+got exactly as far as its own `devLog('tap ... try=1')` line. Meanwhile heartbeat wakes, same
+watch, same minute, flushed every 60 s (`conn: true`).
+
+So the failure sits between "carrier armed" and "frames out", in the tap path only, and it
+flipped between builds in a way that cannot be explained by any single line I changed. Given the
+reference docs state plainly that a notification action aimed at an **app-service** can do
+nothing at all with no error, and that their production app points actions at a **page**, the
+0.9.20 decision is to stop relying on that shape:
+
+* `render()` now writes `file: 'page/index'` with the same `i=`/`a=` param;
+* the page's `handleLaunchTap()` arms a carrier alarm, sends `MSG.ACK` over the same
+  MessageBuilder its probe uses (a path measured reliable across dozens of wakes), and cancels
+  the carrier on success - so durability is unchanged and the answering happens in the context
+  that provably reaches the phone;
+* the service keeps handling carrier wakes, so a press the page cannot send is still retried;
+* the `tap-no-shake` branch now flushes before quitting, closing a hole where a wake that ran and
+  failed the handshake left no trace at all.
+
+Cost, accepted: the app opens when a button is pressed. The official Zepp water app makes the
+same trade.

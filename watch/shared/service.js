@@ -17,6 +17,8 @@ import {
   cycleCadence,
   CADENCE_STEPS,
   setHeartbeatAlarm,
+  setCarryAlarm,
+  cancelAlarm,
   cancelAllTickAlarms,
   pendingIds,
   armedIds,
@@ -41,6 +43,8 @@ export {
   armedIds,
   ourIds,
   setHeartbeatAlarm,
+  setCarryAlarm,
+  cancelAlarm,
 }
 
 export const ARMED_KEY = 'relay_armed'

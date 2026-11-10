@@ -465,6 +465,27 @@ console.log('\na tap cannot end the schedule')
   check('a tap restores a heartbeat that is gone', rearm.length === 1 && rearm[0].json.ok === 1, JSON.stringify(rearm[0] && rearm[0].json))
 }
 
+console.log('\nbuttons: an action targets the page, not the app-service')
+{
+  // The reference app's recipe, and the docs allow that an action aimed at an app-service does
+  // nothing at all with no error - which is what the wrist showed on 0.9.18 while the page's own
+  // BLE probe kept working. Assert the file the watch puts in the notification centre.
+  const w = makeWatch()
+  w.opts.items = [{
+    id: '40-abcdef',
+    title: 'Medication',
+    body: 'take it',
+    vibrate: 2,
+    actions: [{ id: 'yes', label: 'yes' }, { id: 'no', label: 'no' }],
+  }]
+  const st = await runWake(w, 'via=alarm&mode=oneshot&hb=1')
+  const made = st.notifications[0]
+  check('the notification carries the item actions', !!made && made.actions.length === 2, JSON.stringify(made && made.actions && made.actions.length))
+  const files = made && made.actions ? made.actions.map((a) => a.file) : []
+  check('every action targets a page', files.length > 0 && files.every((f) => f === 'page/index'), JSON.stringify(files))
+  check('the param still names the press', made && /i=40-abcdef/.test(made.actions[0].param), made && made.actions[0].param)
+}
+
 console.log('\nheartbeat: the schedule is one repeating record the OS owns')
 {
   // Arming is the page's job, and it must produce exactly one record: cancel everything,

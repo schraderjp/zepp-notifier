@@ -63,6 +63,13 @@ import { append as devLog } from '../shared/devlog'
 const logger = log.getLogger('relay.tick')
 
 const SERVICE_FILE = 'app-service/notifier'
+// Buttons target the PAGE, not the service. The reference app's recipe, and the docs are
+// explicit that an action aimed at an app-service can do nothing at all with no error - which
+// is exactly what happened here on 0.9.18: the press wake armed its carrier alarm and then
+// produced no telemetry, no ack, in both app-open and app-closed conditions, while the page's
+// own BLE probe worked throughout. A page-routed action runs in the context that is proven to
+// reach the phone. The service still answers carrier wakes, so durability is unchanged.
+const PAGE_FILE = 'page/index'
 const ARMED_KEY = 'relay_armed'
 const BUZZ = 5
 
@@ -346,7 +353,7 @@ function render(items) {
     if (!n) continue
     const actions = n.actions.map((a) => ({
       text: a.label.slice(0, 18),
-      file: SERVICE_FILE, // buttons must target THIS service (single slot rule)
+      file: PAGE_FILE, // see PAGE_FILE: a page-routed action is the shape that works
       param: encodeActionParam({ i: n.id, a: a.id }),
     }))
     try {
@@ -590,9 +597,12 @@ function tap(raw) {
 
   connect((ok) => {
     if (!ok) {
-      // Nothing can leave this context, but the next attempt is already in the OS.
+      // Nothing can leave this context, but the next attempt is already in the OS. Flush before
+      // quitting: this branch used to queue the line and drop it, which is how a wake that ran
+      // and failed the handshake became indistinguishable from one that never ran.
       devLog('tap-no-shake ' + i)
       queueLog({ t: MSG.LOG, e: 'tap-no-shake', i, a, try: attempt })
+      flushLogs()
       return quit('tap-no-shake')
     }
     // Queue the dispatch BEFORE the request so the same flush that carries tap.received also

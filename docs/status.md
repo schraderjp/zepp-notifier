@@ -9,7 +9,16 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.19** (code 86) is **built, not installed**
+**0.9.20** (code 87) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.20-20261110122922.zab`). The device log showed
+`tap 34-95c8a4/yes try=1` with `tap carry=...`: the press wake ran and armed its carrier, then
+could not reach the phone at all, while the page's own BLE probe worked throughout. Rather than
+keep patching a delivery shape the docs say may silently do nothing, buttons now target
+`page/index` (the reference app's recipe) and the page answers over the probe's BLE path,
+carrying the press in an alarm as before. The app opens on a press - the official app makes the
+same trade.
+
+**0.9.19** (code 86)
 (`dist/10262217-Notify_Relay-0.9.19-20261110121738.zab`). On 0.9.18 a press produced no telemetry
 at all where 0.9.17 had produced a full trace, with the only changed condition being that the app
 had been opened 78 s earlier. That fits the reference docs' warning that an action targeting an

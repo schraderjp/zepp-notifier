@@ -18,7 +18,7 @@ import * as ui from '@zos/ui'
 import { push } from '@zos/router'
 import { notify } from '@zos/notification'
 import { getPackageInfo } from '@zos/app'
-import { MSG, decodeActionParam } from '../shared/protocol'
+import { MSG, decodeActionParam, encodeActionParam } from '../shared/protocol'
 import * as ble from '@zos/ble'
 import * as appServiceMgr from '@zos/app-service'
 import { log } from '@zos/utils'
@@ -41,6 +41,8 @@ import {
   ALARM_PERMISSION,
   ensureBgPermission,
   armedIds,
+  setCarryAlarm,
+  cancelAlarm,
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 
@@ -93,9 +95,20 @@ Page({
       appendDevLog('page tap construct fail ' + e)
       return
     }
-    mb.request({ t: MSG.ACK, i, a, ts: Date.now() }, { timeout: 6000 })
+    // Arm the carrier BEFORE the request, exactly as the service path does: if this context
+    // dies mid-send, the press is still carried by an alarm the OS owns.
+    const ts = Date.now()
+    let carry = null
+    try {
+      carry = setCarryAlarm('retry=1&' + encodeActionParam({ i, a }) + '&ts=' + ts + '&n=1', 90)
+      appendDevLog('page tap carry=' + (carry && carry.ok ? carry.id : 'FAIL'))
+    } catch (e) {}
+    mb.request({ t: MSG.ACK, i, a, ts }, { timeout: 6000 })
       .then(() => {
         appendDevLog('page tap ok ' + i)
+        try {
+          if (carry && carry.ok && Number(carry.id) > 0) cancelAlarm(carry.id)
+        } catch (e) {}
         try {
           this.hint.setProperty(ui.prop.TEXT, ('answered from the app: ' + a).slice(0, 46))
         } catch (e) {}
