@@ -669,3 +669,49 @@ one of them invisible to its own tests because the fakes were written from the s
 prose. `docs/schema-v1.json` was correct throughout but was not the file the author read.
 `docs/client-checklist.md` is now the file to read, and `tools/check-checklist.py` fails
 the build if it drifts from the schema.
+
+## 2026-11-10, morning — "it stops talking for hours": watch chain, not phone
+
+The question was which end fails when the watch goes silent for hours. `tick.wake` made
+it answerable, because the tick arms its next alarm **before** it touches BLE, so the
+`chainId` in two telemetry frames counts how many wakes actually happened — including the
+ones that never reached the phone.
+
+Overnight window, 03:40 → 08:52 (5.2 h):
+
+| evidence | reading |
+|---|---|
+| `chainId` 4337 → 4342, i.e. **5 alarm ids over 312 min** (~2–3 wakes, cadence says ~624) | the alarm chain was **not firing**. This is the watch, and it is not a link problem: a wake whose shake fails still arms |
+| no `poll.served` at all | nothing asked the phone anything |
+| `cache.refresh` silent for 300 min, then resuming with the **same instance** (`requests` stayed 281) | the phone-side service was alive and only its timers were frozen — Android dozing a backgrounded app. Normal, and it costs nothing while nothing is queued |
+| after the phone woke, 11.4 min of `cache.refresh` with still no device request | the phone was ready and the watch was still dead — so opening the Zepp app cannot be what fixes this |
+| the tick came back 34 s after the app was installed/opened (page probe, side restart, then `tick.wake` chainId 4342) | an app open re-armed it. `app.js` auto-arm **skips when an alarm is listed pending**, and a frozen alarm still is — so opening the app alone did nothing, and pressing Arm did |
+
+So: the OS freezes the alarm chain when the watch sleeps (off the wrist overnight), and the
+only recovery was a force re-arm. That is a platform property, not a bug in the chain — but
+requiring the user to press Arm after every sleep is.
+
+Three changes (0.9.6):
+
+* the page **re-arms itself** when the phone reports a silent chain. It already probed the
+  side on open; now a `sinceDeviceMs` older than 3 min — or "none this side instance" —
+  triggers an Arm-style force re-arm and says so on screen.
+* the phone's `sinceDeviceMs` was meaningless: `heard()` ran on *every* request, including
+  the page's own probe, so it always read ~0 ("last tick: 0s ago" on a chain dead for
+  hours). Ticks and calls now count as liveness; probes no longer do.
+* installing a build starts a new side instance and never stops the old one. Measured at
+  the same recovery: two instances both refreshing, visible as `cache.refresh` events whose
+  `requests` counter alternated `1, 281, 1, 281`. Detection only (`side.duplicate`, with
+  both instance ids) — deliberately not a leader lock, because standing down could strand
+  the device on the instance its port is not pointing at, and there is no way back. The
+  operational fix is documented instead: force-stop the Zepp app once after every install.
+
+Diagnostic recipe for the next report, cheapest first:
+
+```bash
+jq -r 'select(.event=="tick.wake") | [.received_at, .data.chainId] | @tsv' events.jsonl | tail -5
+jq -r 'select(.event=="cache.refresh") | .requests' events.jsonl | tail -5   # two counters = two side instances
+```
+
+* chainId advanced with the gap → the wake ran and the **link/phone** failed.
+* chainId barely advanced → the **watch** never woke: sleep mode, dead alarm, or disarmed.

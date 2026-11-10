@@ -41,6 +41,11 @@ import {
 } from '../shared/service'
 import { append as appendDevLog, read as readDevLog, sinkState } from '../shared/devlog'
 
+// How long the phone may report "nothing from the tick" before opening this page is
+// treated as a recovery. Comfortably above one cadence (60 s) and below the point where
+// the user would call it "stopped talking", so a healthy chain is never disturbed.
+const STALE_MS = 180000
+
 const logger = log.getLogger('relay.page')
 
 const W = 390
@@ -214,6 +219,7 @@ Page({
         }
         this.link.setProperty(ui.prop.TEXT, text)
         if (!quiet) this.hint.setProperty(ui.prop.TEXT, 'link ok ' + ms + 'ms')
+        this.maybeRecover(since, ms)
       })
       .catch((err) => {
         const reason = (err && (err.reason || err.message)) || String(err)
@@ -230,6 +236,40 @@ Page({
   },
 
 
+
+  // Opening the app is the only recovery lever a user has, and until 0.9.6 it only worked
+  // by accident. Measured overnight 2026-11-10: the alarm chain froze for 5.2 h (the tick
+  // armed 5 alarm ids instead of ~624), the phone meanwhile kept reporting "last tick:
+  // 5h ago", and app.js's auto-arm skipped because a frozen alarm is still listed as
+  // pending. So the obvious user action - open the app - did nothing, and only pressing
+  // Arm again revived it.
+  //
+  // The page can SEE the silence, so it re-arms by itself: the phone answers the probe with
+  // the age of the last device message it handled, and anything older than STALE_MS (or
+  // "none this side instance") means the chain is dead or unknown. Arm-style force
+  // re-arm, so a spent-but-pending alarm cannot make it a no-op.
+  maybeRecover(since, ms) {
+    if (this.recovered) return
+    if (!isArmed()) return
+    const stale = typeof since !== 'number' || since < 0 || since > STALE_MS
+    if (!stale) return
+    this.recovered = true
+    appendDevLog('auto-rearm since=' + since + ' probe=' + ms + 'ms')
+    armNotifier(
+      (result) => {
+        appendDevLog('auto-rearm ' + JSON.stringify(result).slice(0, 110))
+        const ok = result && result.ok
+        this.hint.setProperty(
+          ui.prop.TEXT,
+          ok
+            ? 'chain was silent - re-armed, next check ~60s'
+            : 're-arm FAILED: ' + String((result && (result.reason || result.skipped)) || '?').slice(0, 30),
+        )
+        this.refresh()
+      },
+      { mode: MODE_ONESHOT, delaySec: 60 },
+    )
+  },
 
   // Any failure is ALSO rendered as a notification: the hint line is 390 px wide
   // and the error strings are long, so a notification is the only place they can

@@ -24,13 +24,23 @@ const K = {
   since: 'relay_since',
   pending: 'relay_pending',
   outbox: 'relay_outbox',
+  instance: 'relay_side_instance',
 }
 
 const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
 // Reported with side.online so the trace names the build that produced it. Keep it
 // equal to app.json's version.name: the side ships inside the same package.
-const SIDE_VERSION = '0.9.5'
+const SIDE_VERSION = '0.9.6'
+
+// Installing a build starts a NEW side-service instance and never stops the old one
+// (`onDestroy` never fires; force-stop does not kill them - docs/findings.md). Measured
+// 2026-11-10: for 12+ minutes two instances were both refreshing the cache and both
+// reporting, visible as `cache.refresh` entries whose `requests` counter alternated
+// between 1 and 281. Nothing in the platform can step the old one down, but it can at
+// least be NAMED: every instance registers a marker on init, and an instance that finds
+// somebody else's marker says so once, so the operator knows to restart the Zepp app.
+const MY_INSTANCE = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)
 
 const mb = new MessageBuilder()
 
@@ -255,8 +265,16 @@ async function sendSeen(payload) {
 
 // --- helpers ----------------------------------------------------------------
 
-function heard() {
-  lastTickAt = Date.now()
+// Age of the last DEVICE-INITIATED TICK, not of any request.
+//
+// The phone resets this on every request, and the page's own diagnostic probe is a
+// request - so `sinceDeviceMs` was always ~0 and the page's "last tick: Ns ago" read
+// "0s ago" on a watch whose chain had been dead for hours. Probes are diagnostics and
+// must not count as liveness, which is exactly what this number is for: it is the only
+// cross-check the watch has on whether its own alarm chain is still firing.
+// (Declared at the top with the other side-service state.)
+function heard(isTick) {
+  if (isTick) lastTickAt = Date.now()
 }
 
 function decode(ctx) {
@@ -316,9 +334,28 @@ function refreshCache() {
 
 function scheduleRefresh() {
   setTimeout(() => {
+    checkInstance()
     refreshCache()
     scheduleRefresh()
   }, CACHE_TTL_MS)
+}
+
+// One report per instance when another one has claimed the transport since we started.
+// Deliberately detection-only: standing down could strand the device on this instance's
+// dead socket, and the platform gives no way back if the newer one turns out to be the
+// one the device is not talking to.
+let instanceChecked = false
+function checkInstance() {
+  if (instanceChecked) return
+  let other = ''
+  try {
+    other = String(settings.settingsStorage.getItem(K.instance) || '')
+  } catch (e) {
+    return
+  }
+  if (!other || other === MY_INSTANCE) return
+  instanceChecked = true
+  report('side.duplicate', { mine: MY_INSTANCE, other, requests, sinceTickMs: lastTickAt ? Date.now() - lastTickAt : -1 })
 }
 
 // An item is done being served once the watch says it rendered it, or answered it.
@@ -330,6 +367,11 @@ function dropFromCache(ids) {
 AppSideService({
   onInit() {
     startedAt = Date.now()
+    // Claim the transport for this instance; checkInstance() reports if someone with a
+    // later start claims it instead.
+    try {
+      settings.settingsStorage.setItem(K.instance, MY_INSTANCE)
+    } catch (e) {}
     // listen() attaches the peerSocket listener and resolves the shake promise.
     // Without it a device-initiated request is never even parsed.
     mb.listen(() => {})
@@ -340,7 +382,9 @@ AppSideService({
     mb.on('request', async (ctx) => {
       const req = decode(ctx)
       requests++
-      heard()
+      // A probe is the page asking "when did you last hear a tick?" - counting it would
+      // answer its own question.
+      heard(req.t !== MSG.PROBE)
 
       if (req.t === MSG.PROBE) {
         ctx.response({
@@ -438,7 +482,9 @@ AppSideService({
     // the handshake, so "the alarm fired but the link is dead" is visible in the
     // trace as a beacon with no matching probe/poll answer.
     mb.on('call', (full) => {
-      heard()
+      // A fire-and-forget frame (telemetry, or an ack from an older watch build) is
+      // device-initiated work too, so it counts as a tick for liveness.
+      heard(true)
       let msg = null
       try {
         msg = mb.buf2Json(full.payload)

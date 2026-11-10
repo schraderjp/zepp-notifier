@@ -6,17 +6,27 @@
 
 ## Installed
 
-**0.9.4** (code 71) is on the wrist and **working**: the first tap after the install produced
-`tap.received{try:0}` → `tap.received{via:request}` → `ack.received{transit_ms:1905}` →
-`tap.sent{lag:1240}`, with the carry alarm armed and cancelled (an extra `chainId` at tap
-time, no `tap.retry` 90 s later). `side.online` reports `0.9.4`, so the side restarted onto
-the new build as well.
+**0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
+everything below about 0.9.4 still applies.
 
-**0.9.5** (code 72) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.5-*.zab`).
-It removes one redundant side event: the side used to `report('ack.received')` on every ack,
-which the relay's own `POST /v1/ack` handler records anyway, so `grep -c ack.received`
-counted each answer twice. `tap.received` covers it. No behaviour change, no reflash
-required on its account.
+**0.9.6** (code 73) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.6-*.zab`).
+Three changes, all aimed at the "it stops talking for hours" report:
+
+* the page **re-arms itself** when the phone reports a silent chain (probe → force re-arm
+  when the last tick is > 3 min old or unknown). Opening the app is now sufficient; no Arm
+  press, no guessing which step worked.
+* the phone's `sinceDeviceMs` counted *every* request, including the page's own probe, so it
+  always read ~0 — "last tick: 0s ago" on a chain that had been dead for hours. Ticks and
+  calls count now; probes do not.
+* the side reports `side.duplicate` when another instance has claimed the transport since it
+  started. Detection only — see README "Build and install": force-stop the Zepp app once
+  after installing a build.
+
+Diagnosis of the overnight outage (5.2 h, 03:40 → 08:52): the **watch** stopped, not the
+phone. `chainId` advanced 5 instead of ~624, so the alarm chain was not firing at all;
+the phone was merely dozing (`cache.refresh` silent, same instance), came back on its own,
+and then waited 11 min for a device request that never came. Details and the reusable
+diagnostic: `docs/findings.md` → "2026-11-10, morning".
 
 Relay: deployed from git on `homelab` at
 `/opt/docker/dockhand/stacks/Local/zepp-relay`. The tap-loss work is additive

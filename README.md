@@ -94,6 +94,20 @@ open **Notify Relay** once, grant the background permission, **Disarm (sweep)**
 if anything is pending, set **Cadence** (60 s battery / 20 s latency), then
 **Arm 30s (silent)**. First wake in ~30 s, steady cadence after.
 
+Installing a build starts a **new Side Service instance and never stops the old
+one** (`onDestroy` never fires; force-stop does not kill them). Two live instances
+both refresh the cache and both answer the Messaging socket, which shows up in
+`events.jsonl` as `cache.refresh` entries whose `requests` counter alternates
+between two values. After every install, **force-stop the Zepp app once** (Android
+settings → Apps → Zepp → Force stop) and reopen it. Since 0.9.6 the side also
+reports `side.duplicate` when it sees another instance's marker, so the condition
+is visible instead of being guessed at.
+
+If the watch has been asleep (overnight, or off the wrist), the OS freezes the
+alarm chain and no wake happens until something re-arms it. Opening **Notify
+Relay** is enough from 0.9.6: the page asks the phone when it last heard from the
+tick and re-arms itself when the answer is "never" or "hours ago".
+
 ## Run the relay
 
 Dev:
