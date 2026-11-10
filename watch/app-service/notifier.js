@@ -24,9 +24,9 @@
 //
 // E1 proved the transport (alarm -> one wake -> one Request -> one answer, 8
 // consecutive 60 s cycles). This build is E2: the answer carries notifications,
-// which are rendered here, and a button tap acks on its own wake. Since 0.9.3 an ack
-// is *durable*: it is queued in localStorage before any BLE work and retried on later
-// wakes until the phone answers it (see the durability section below).
+// which are rendered here, and a button tap acks on its own wake. A press is durable
+// because the next attempt is carried in an alarm set before the link is touched (see
+// the durability section and tap()).
 
 import {
   MessageBuilder,
@@ -44,8 +44,7 @@ import { cancel, notify } from '@zos/notification'
 import { localStorage } from '@zos/storage'
 import { log } from '@zos/utils'
 import { MSG, decodeActionParam, encodeActionParam, normalizeNotification } from '../shared/protocol'
-import { armNext, armNextOneshot, pendingIds, cancelAllTickAlarms } from '../shared/alarm'
-import { createOutbox } from '../shared/outbox'
+import { armNext, armNextOneshot, pendingIds, cancelAllTickAlarms, setCarryAlarm, cancelAlarm } from '../shared/alarm'
 // NO `@zos/app-service` IMPORT. Measured: 0.4.3 (no such import) executed and
 // rendered; 0.4.5-0.4.11 (with it) never executed once. Importing the module that
 // manages app services into an app service is a load-time failure here, which
@@ -62,22 +61,32 @@ const BUZZ = 5
 
 // --- durability -------------------------------------------------------------
 //
-// A wake is a fresh JS context: nothing survives it except storage. Two queues
-// therefore live in localStorage, and both are flushed only AFTER the handshake
-// (see beacon() for why the pre-shake window cannot be used):
+// A wake is a fresh JS context, and on this device storage does NOT cross contexts
+// (docs/findings.md: "localStorage caches per JS context (service lines lost on service
+// death)", "page and service localStorage are separate stores"). A 0.9.3 attempt to keep
+// a queued ack in localStorage therefore looked correct and did nothing: measured, a tap
+// that died before the handshake wrote its ack and no later wake ever saw it.
 //
-//   ACKS  a button the user already pressed. Written before the first BLE call and
-//         removed only when the phone answers, so a tap is at-least-once instead of
-//         one fire-and-forget frame. The relay collapses identical (id, action)
-//         retries, so a replay is free.
-//   LOGS  telemetry. Same queue for a different reason: a beacon sent before the
-//         shake carries port2=0 and the phone drops it, which is why `tick.wake`
-//         was never in events.jsonl.
-const ACKS = createOutbox(localStorage, 'relay_ackq', 12, (e) => e.i + '|' + e.a)
-const LOGS = createOutbox(localStorage, 'relay_logq', 24, null)
-// How many queued acks one wake may try to drain. One is the normal case; the cap
-// only bounds a backlog so a single wake cannot exceed its execution budget.
-const ACK_PER_WAKE = 3
+// The only durable store is an ALARM: OS state, delivered as a param to the wake it
+// produces, and reboot-proof with store:true. So a press that has not been answered is
+// carried by one, see tap(). Telemetry is not persisted at all - a line queued by a wake
+// that dies is gone, which is why every failure path also has a devLog line on the
+// watch. The in-memory buffer below only makes one wake's facts travel in order.
+const logs = []
+const MAX_LOGS = 24
+
+// A press is retried until the phone answers it. 90 s for the first attempts (a
+// handshake that fails once usually works on the next wake), then 5 min: the case that
+// matters is "Bluetooth is off for a while", where 40 attempts still cover ~3 h without
+// spending a wake a minute.
+const RETRY_MARK = 'retry=1'
+const RETRY_MAX = 40
+const RETRY_FIRST_SEC = 90
+const RETRY_LATER_SEC = 300
+// Pending-alarm limit before the storm guard disarms. Raised from 3 because a tap waiting
+// to be answered legitimately holds one alarm of its own, and the guard's response is to
+// cancel every alarm we own - which would throw away exactly those presses.
+const STORM_LIMIT = 8
 
 // 'probe' = E1, transport only. 'poll' = E2, fetch + render.
 const TICK_KIND = 'poll'
@@ -154,9 +163,8 @@ function connect(done) {
   }
   // A brand-new builder's shake promise resolves when the side answers the
   // shake. If the side is not running it never resolves and the OS kills this
-  // tick. Nothing is lost by that: work that matters (an ack, telemetry) is already
-  // in localStorage, and the next wake retries it - so a dead link costs latency,
-  // not an answer.
+  // tick. Nothing is lost by that: what must survive was armed before this call (a
+  // carried press, the next alarm), so a dead link costs latency, not an answer.
   const p = mb.waitingShakePromise
   if (!p || typeof p.then !== 'function') return done(true)
   p.then(() => done(true)).catch(() => done(false))
@@ -237,64 +245,59 @@ function beacon(payload) {
   }
 }
 
-// Telemetry: durable, then flushed when a link exists. Cheap - the App Service only
-// writes JSON to localStorage a handful of times per wake.
+// Telemetry for THIS wake, in send order. Not persisted: see the durability note above.
 function queueLog(payload) {
-  return LOGS.push(payload)
+  if (logs.length >= MAX_LOGS) logs.shift()
+  logs.push(payload)
+  return logs.length
 }
 
-// Send queued telemetry frames, oldest first, stopping at the first refusal so the rest
-// stay for the next wake. Bounded per WAKE (not per call): after a long outage the queue
-// can hold a couple of dozen entries, and draining all of them must not eat the budget of
-// the poll that is the reason this wake exists. `logsSent` is module state, and a module
-// instance is exactly one wake. Returns how many left this context.
-const LOG_BUDGET = 8
-let logsSent = 0
-
+// Send the buffered telemetry, oldest first, stopping at the first refusal (no link), in
+// which case what is left dies with the context. Returns how many left.
 function flushLogs() {
-  const list = LOGS.list()
   let sent = 0
-  while (sent < list.length && logsSent < LOG_BUDGET) {
-    if (!beacon(list[sent])) break
+  while (logs.length) {
+    if (!beacon(logs[0])) break
+    logs.shift()
     sent++
-    logsSent++
   }
-  if (sent) LOGS.take(sent)
   return sent
 }
 
-// Record a tap durably. Called before any BLE work: whatever fails afterwards, the
-// press itself is already answerable.
-function queueAck(i, a, ts) {
-  return ACKS.push({ i: String(i), a: String(a || ''), ts: ts || Date.now() })
+// --- carrying a press across wakes ------------------------------------------
+
+function paramValue(raw, key) {
+  for (const pair of String(raw || '').split('&')) {
+    const idx = pair.indexOf('=')
+    if (idx <= 0) continue
+    if (pair.slice(0, idx) === key) return pair.slice(idx + 1)
+  }
+  return ''
 }
 
-// Drain queued acks, one request each, sequentially. A response from the side IS the
-// receipt: the side answers before it does HTTP and queues to its own outbox if the
-// POST fails, so once it has answered the ack is out of the watch's hands.
-// Stops on the first send that produces no answer; the entry stays queued.
-function flushAcks(limit, done) {
-  const list = ACKS.list()
-  if (!list.length) return done(0)
-  let sent = 0
-  let idx = 0
-  const next = () => {
-    if (idx >= list.length || sent >= limit) return done(sent)
-    const item = list[idx++]
-    requestOnce({ t: MSG.ACK, i: item.i, a: item.a, ts: item.ts }, (res) => {
-      if (!res) {
-        devLog('ack.nores ' + item.i)
-        queueLog({ t: MSG.LOG, e: 'tap-send-failed', i: item.i, a: item.a })
-        return done(sent)
-      }
-      ACKS.drop((e) => e.i === item.i && e.a === item.a)
-      sent++
-      devLog('ack.sent ' + item.i + '/' + item.a + ' lag=' + (Date.now() - item.ts))
-      queueLog({ t: MSG.LOG, e: 'tap.sent', i: item.i, a: item.a, lag: Date.now() - item.ts })
-      next()
-    })
-  }
-  next()
+function retryDelay(n) {
+  return Number(n) <= 5 ? RETRY_FIRST_SEC : RETRY_LATER_SEC
+}
+
+// The param of a carried press: the same i/a encoding a notification button uses (so
+// decodeActionParam() works unchanged) plus the original timestamp and the attempt
+// number. Kept well under the 120-char param budget encodeActionParam() respects.
+function carriedParam(i, a, ts, n) {
+  return RETRY_MARK + '&' + encodeActionParam({ i, a }) + '&ts=' + Number(ts) + '&n=' + Number(n)
+}
+
+// Send one ack and report whether the phone answered it. The answer is the receipt: the
+// side responds BEFORE its HTTP call and queues to its own durable outbox on failure, so
+// once it has answered, the press is out of the watch's hands.
+function sendAck(i, a, ts, done) {
+  requestOnce({ t: MSG.ACK, i, a, ts }, (res) => {
+    if (!res) {
+      devLog('ack.nores ' + i)
+      queueLog({ t: MSG.LOG, e: 'tap-send-failed', i, a })
+      return done(false)
+    }
+    done(true)
+  })
 }
 
 // --- work -------------------------------------------------------------------
@@ -370,7 +373,7 @@ function tick(param) {
   // Storm guard, before anything else: if the table has piled up, this build is
   // misbehaving. Cancel everything and switch the app off rather than arm more.
   const pendingNow = pendingIds()
-  if (pendingNow.length > 3) {
+  if (pendingNow.length > STORM_LIMIT) {
     devLog('tick STORM GUARD pending=' + JSON.stringify(pendingNow))
     try {
       cancelAllTickAlarms()
@@ -525,16 +528,9 @@ function tick(param) {
             devLog('seen.send.fail ' + e)
           }
         }
-        // Anything a previous wake could not deliver is retried here, after a
-        // successful exchange: a tap whose wake died before the handshake is still
-        // queued, and this is the wake that finally answers it.
-        flushLogs()
-        // The telemetry those retries wrote is flushed in the same wake, so an ack and
-        // its trace always travel together and a rebuild is never ambiguous.
-        flushAcks(ACK_PER_WAKE, () => {
-          flushLogs()
-          quit('poll')
-        })
+        // Nothing to drain here any more: an unanswered press carries itself in an
+        // alarm (see tap()), so a poll wake has no backlog to retry.
+        quit('poll')
       })
       return
     }
@@ -545,39 +541,68 @@ function tick(param) {
   })
 }
 
-// Tap path: durable first, then one request per queued ack, exit on the answer. The
-// side replies before it does HTTP, so the budget is one BLE round trip per ack, not
-// one round trip plus a POST.
+// Tap path. A press is a user action that has already happened, so the next attempt is
+// armed BEFORE the link is touched: a one-shot alarm whose param carries the press. If
+// this wake completes, that alarm is cancelled; if the wake dies - the measured failure,
+// the side never answering the shake - the alarm fires and the press is retried, and with
+// store:true it even survives a reboot.
+//
+// Idempotent end to end: the side answers before its POST and queues to its own outbox,
+// the relay collapses identical (id, action) answers, and cancelling an alarm that
+// already fired only costs one duplicate frame.
 function tap(raw) {
   const { i, a } = decodeActionParam(raw)
-  // No id in the param: the press is unanswerable, but it must not be invisible.
+  const retry = raw.indexOf(RETRY_MARK) >= 0
+  const attempt = Number(paramValue(raw, 'n')) || 0
+  // The original press time, so `lag` and the relay's transit_ms measure the user's
+  // patience rather than the last retry.
+  const ts = Number(paramValue(raw, 'ts')) || Date.now()
+
+  // No id in the param: unanswerable. There is no ack to carry, so the trace is the only
+  // evidence the press happened - make one attempt to report it instead of dying quietly.
   if (!i) {
     devLog('tap-no-id ' + raw.slice(0, 40))
     queueLog({ t: MSG.LOG, e: 'tap-no-id', wake: raw.slice(0, 60) })
-    return quit('tap-no-id')
+    connect((ok) => {
+      if (ok) flushLogs()
+      quit('tap-no-id')
+    })
+    return
   }
 
-  // THE DURABILITY POINT. Everything below this line can fail - Bluetooth can be
-  // down, the shake can never resolve, the OS can reap this context mid-flight - and
-  // none of it may cost the answer. The press is recorded here and removed only when
-  // the phone answers, so a failed wake becomes a retry, not a lost tap.
-  const ts = Date.now()
-  devLog('tap ' + i + '/' + a)
-  queueAck(i, a, ts)
-  queueLog({ t: MSG.LOG, e: 'tap.received', i, a, queued: ACKS.size(), ts })
+  // THE DURABILITY POINT. Everything below can fail, including the OS reaping this
+  // 600 ms context mid-shake.
+  let carry = null
+  if (attempt < RETRY_MAX) {
+    carry = setCarryAlarm(carriedParam(i, a, ts, attempt + 1), retryDelay(attempt + 1))
+    devLog('tap carry=' + (carry && carry.ok ? carry.id : 'FAIL ' + ((carry && carry.err) || '?')))
+  } else {
+    devLog('tap retries exhausted ' + attempt)
+  }
+
+  devLog('tap ' + i + '/' + a + ' try=' + attempt)
+  // Named `tap.received` even on a retry: what it means is "the service was woken by a
+  // press and is answering it", which is true either way. `try` says which attempt.
+  queueLog({ t: MSG.LOG, e: 'tap.received', i, a, try: attempt, ts })
+  if (retry) queueLog({ t: MSG.LOG, e: 'tap.retry', i, a, try: attempt })
 
   connect((ok) => {
     if (!ok) {
-      // Nothing can leave this context, but the tap is already queued: the next wake
-      // retries it. Record why this one failed so the gap is named, not silent.
+      // Nothing can leave this context, but the next attempt is already in the OS.
       devLog('tap-no-shake ' + i)
-      queueLog({ t: MSG.LOG, e: 'tap-no-shake', i, a, queued: ACKS.size() })
+      queueLog({ t: MSG.LOG, e: 'tap-no-shake', i, a, try: attempt })
       return quit('tap-no-shake')
     }
     flushLogs()
-    flushAcks(ACK_PER_WAKE, (sent) => {
+    sendAck(i, a, ts, (sent) => {
+      if (sent) {
+        // Answered: stop the retry chain. If the cancel itself fails the alarm fires once
+        // more and re-sends an answer both ends collapse.
+        if (carry && carry.ok) cancelAlarm(carry.id)
+        queueLog({ t: MSG.LOG, e: 'tap.sent', i, a, try: attempt, lag: Date.now() - ts })
+        devLog('tap sent ' + i + '/' + a + ' try=' + attempt + ' lag=' + (Date.now() - ts))
+      }
       flushLogs()
-      devLog('tap acked=' + sent + ' queued=' + ACKS.size())
       quit(sent ? 'tap' : 'tap-unacked')
     })
   })

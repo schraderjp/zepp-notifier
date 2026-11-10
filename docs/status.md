@@ -6,7 +6,7 @@
 
 ## Installed
 
-**0.9.3** (code 70) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.3-*.zab`).
+**0.9.4** (code 71) is **built, not installed** (`dist/10262217-Notify_Relay-0.9.4-*.zab`).
 It carries the tap-durability and telemetry fixes below; the wrist keeps running its
 current build until this is flashed and armed (arm silently: `show=0`, so no diagnostic
 notification per wake).
@@ -23,20 +23,35 @@ Action-button taps on relay-delivered notifications sometimes never reached the 
 with no trace on the watch, in the side's log, or in `events.jsonl`. The relay behaved
 correctly throughout (its ack handler records even an unknown id, so a missing
 `ack.received` is proof no frame arrived). Four defects in `watch/` explain it; all four
-are fixed in **0.9.3** (built, not yet installed on the wrist).
+are fixed in **0.9.4** (built, not yet installed on the wrist).
+
+> **0.9.3 fixed three of them and shipped a fourth that did not work.** It queued the
+> unanswered press in `localStorage` for the next wake. Storage on this device does not
+> cross contexts — the repo already said so (`docs/findings.md`: "localStorage caches per
+> JS context (service lines lost on service death)") — so the queue was written by a 600 ms
+> context, died with it, and no later wake ever saw it. Deployed 0.9.3 reproduced exactly
+> that: `tick.wake` arrived (telemetry works), `tap.received` never did, `ack.received`
+> stayed frozen. 0.9.4 carries the press in an **alarm param** instead: OS state, delivered
+> to the wake it produces, and reboot-proof with `store: true`.
 
 | defect | fix |
 |---|---|
-| The ack went out **inside** the `connect()` callback, so a handshake hiccup at tap time discarded the tap with a local `devLog` and nothing on the wire. The comment claimed the opposite. | The press is written to a localStorage outbox **before** any BLE call and removed only when the side answers. A wake that cannot reach the phone becomes a retry on the next one: taps are at-least-once, and the relay already collapses identical `(id, action)`. |
+| The ack went out **inside** the `connect()` callback, so a handshake hiccup at tap time discarded the tap with a local `devLog` and nothing on the wire. The comment claimed the opposite. | The next attempt is armed **before** the link is touched, as a one-shot alarm whose param carries `i`, `a`, the original press time and the attempt number. Answered → the alarm is cancelled. Wake died → the alarm fires and the press is retried (90 s ×5, then every 5 min, up to 40 attempts ≈ 3 h). Taps are at-least-once; the relay collapses identical `(id, action)`. |
 | A tap was gated on `isArmed()`, so a disarmed tick silently ate the answer. | Taps are handled at the top of `tick()`, before the storm guard, re-arming and the armed gate. A user action outranks every scheduled-tick concern. |
-| One fire-and-forget frame, no queue, no confirmation. | `MSG.ACK` is now a Request the side answers (the answer is the receipt); unanswered entries stay queued and up to 3 drain per wake. The side dedupes its own outbox by `(id, action)`. |
-| Watch telemetry never reached the server: `grep -c '"event": "tick.wake"' events.jsonl` was 0 while the tick polled every 60 s. | Two causes, both real: `beacon()` ran while `mb` was still null, so nothing was ever sent; and even with a builder, a pre-shake frame carries `port2 = 0`, which the **side** dropped with only a local `logger.error`. Telemetry now queues and flushes only after the shake, and `message-side.js` accepts port 0 (`watch/shared/VENDORED.md`). |
+| One fire-and-forget frame, no queue, no confirmation. | `MSG.ACK` is now a Request the side answers (the answer is the receipt); the side also queues before its POST and dedupes its outbox by `(id, action)`. |
+| Watch telemetry never reached the server: `grep -c '"event": "tick.wake"' events.jsonl` was 0 while the tick polled every 60 s. | Two causes, both real: `beacon()` ran while `mb` was still null, so nothing was ever sent; and even with a builder, a pre-shake frame carries `port2 = 0`, which the **side** dropped with only a local `logger.error`. Telemetry is buffered per wake and flushed only after the shake, and `message-side.js` accepts port 0 (`watch/shared/VENDORED.md`). Deployed: `tick.wake` now arrives every wake. |
 
-Evidence: `watch/tools/test-tap.mjs` (39 assertions) drives the real notifier against the
+Evidence: `watch/tools/test-tap.mjs` (37 assertions) drives the real notifier against the
 real vendored library with `@zos/*` stubbed and one module instance per simulated wake —
-disarmed tap still acks, a dead handshake loses nothing, the next wake retries and stops
-only on a receipt, `tick.wake` and `tap-no-id` reach the relay. `npm run check` = that
-plus `undef-check`; `tools/test-contract.py` **139 passed, 0 failed**.
+disarmed tap still acks, the carry alarm is armed before BLE and cancelled only on a
+receipt, the retry wake re-sends with the *original* press time and advances the attempt
+number, an unanswered ack leaves the chain armed, and retries stop at the bound.
+`npm run check` = that plus `undef-check`; `tools/test-contract.py` **139 passed, 0 failed**.
+
+Storm guard note: the pending-alarm limit went 3 → 8, because a press waiting to be
+answered legitimately holds an alarm of its own and the guard's response is to cancel
+every alarm we own — which would throw those presses away. A genuine runaway still trips
+it within a few wakes.
 
 Named events now: `tap.received`, `tap.sent`, `tap-no-id`, `tap-no-shake`,
 `tap-send-failed` (watch telemetry), and `tap.received` from the side on both ack paths.

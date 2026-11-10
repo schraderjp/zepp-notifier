@@ -618,10 +618,46 @@ The tap path itself had the same shape of mistake. The ack was sent inside the
 claimed it went out before the handshake — so a BT hiccup at tap time threw the answer
 away, with a local log nobody could read. And taps were gated on `isArmed()`, which is a
 question about *scheduled ticks* and has no business rejecting a button the user has
-already pressed. Fixed by writing the press to a localStorage outbox before any BLE call
-and removing it only when the side answers (at-least-once; the relay's `(id, action)`
-collapse makes replays free), and by handling taps before the storm guard, the re-arm and
-the armed gate.
+already pressed. Taps are now handled before the storm guard, the re-arm and the armed
+gate.
+
+### 22:40 — the first durability fix was wrong, and the docs had said so
+
+The first attempt queued the unanswered press in `localStorage` and drained it on the next
+wake. That is the obvious design and it does not work here, for a reason this file records
+two sections above: **storage does not cross JS contexts** ("localStorage caches per JS
+context (service lines lost on service death)"; "page and service localStorage are separate
+stores"). A tap is a single-execution wake capped at 600 ms, so the context that writes the
+queue is reaped with it.
+
+Deployed 0.9.3 measured exactly that, and the measurement is what identified it:
+
+| event | before 0.9.3 | after 0.9.3 | why |
+|---|---|---|---|
+| `tick.wake` | 0 ever | every wake | the telemetry flush works |
+| `tap.received` | 0 | 0 | the tap context's own frame never left; its buffer died with it |
+| `ack.received` | frozen | frozen | the queued ack was never visible to the next wake |
+| `poll.served` | 60 s | 60 s | chain healthy throughout |
+
+So the wake *is* running — the alarm chain keeps its cadence and the same file renders and
+polls — but nothing it writes survives. Note the asymmetry that made this visible: a poll
+wake's telemetry arrives because it is written and flushed inside one context, while a tap's
+does not, except when the handshake succeeds on the first try.
+
+The durable channel on this platform is an **alarm**. It is OS state, it survives the
+context, `store: true` makes it survive a reboot, and its `param` is handed to the wake it
+produces — which is how `via=alarm&mode=oneshot` already worked. So an unanswered press is
+re-armed as its own alarm (`retry=1&i=…&a=…&ts=…&n=…`) *before* the link is touched, and the
+wake that receives it re-sends the ack with the original press time. Answered → cancel the
+alarm. Died → the alarm fires and tries again (90 s ×5, then 5 min, 40 attempts ≈ 3 h).
+
+Two consequences worth keeping:
+
+* telemetry is deliberately **not** persisted. A line queued by a wake that dies is gone;
+  the durable evidence of a press is the retry alarm, and every failure path also writes a
+  devLog line on the watch.
+* the storm guard's ceiling had to move from 3 pending alarms to 8: a press waiting to be
+  answered holds one of its own, and the guard's response is to cancel every alarm we own.
 
 Also measured here: `served_count` cannot be read alone. The side answers the watch from
 its cache and refreshes with `?peek=1`, and the relay deliberately does not count a peek

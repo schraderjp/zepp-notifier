@@ -31,7 +31,6 @@ const deferModule = await import('../shared/defer.js')
 const dataModule = await import('../shared/data.js')
 const eventModule = await import('../shared/event.js')
 const protocolModule = await import('../shared/protocol.js')
-const outboxModule = await import('../shared/outbox.js')
 const { json2buf } = dataModule
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -111,8 +110,8 @@ const utilsStub = (EventBus) => ({
   log: { getLogger: () => ({ log() {}, warn() {}, error() {}, debug() {} }) },
 })
 
-// One simulated watch: a fresh notifier module per wake, one storage across wakes,
-// and a BLE link whose behaviour each test controls.
+// Telemetry is deliberately not durable, so the sim does not need storage across wakes:
+// what must survive is the carry alarm, and that is asserted directly.
 function makeWatch(options = {}) {
   const opts = Object.assign({ respondShake: true, respondRequest: true, items: [], cancel: [] }, options)
   const storage = opts.storage || fakeStorage()
@@ -123,6 +122,9 @@ function makeWatch(options = {}) {
     devlog: [],
     inbound: null,
     armedCalls: 0,
+    carries: [], // setCarryAlarm() calls
+    cancelledAlarms: [], // cancelAlarm() calls
+    nextAlarmId: 500,
   }
 
   // A second builder from the same library is the easiest way to build a
@@ -144,8 +146,6 @@ async function runWake(watch, param) {
   const { storage, state, opts, helper } = watch
   const EventBus = eventModule.EventBus
   const protocol = protocolModule
-  const outbox = outboxModule
-  const alarm = await import('../shared/alarm.js').catch(() => null)
 
   let captured = null
 
@@ -246,6 +246,15 @@ async function runWake(watch, param) {
       },
       pendingIds: () => [],
       cancelAllTickAlarms: () => {},
+      setCarryAlarm: (p, delay) => {
+        const entry = { param: p, delaySec: delay, id: state.nextAlarmId++ }
+        state.carries.push(entry)
+        return { ok: true, id: entry.id }
+      },
+      cancelAlarm: (id) => {
+        state.cancelledAlarms.push(id)
+        return true
+      },
     },
     '../shared/devlog': {
       append: (m) => {
@@ -253,9 +262,7 @@ async function runWake(watch, param) {
         return true
       },
     },
-    '../shared/outbox': outbox,
   }
-  if (alarm) stubs['../shared/alarm'] = alarm
 
   globalThis.__ZEPPOS__ = 1
   globalThis.AppService = (def) => {
@@ -271,14 +278,6 @@ async function runWake(watch, param) {
   return state
 }
 
-function queue(storage, key) {
-  try {
-    const list = JSON.parse(storage.getItem(key) || '[]')
-    return Array.isArray(list) ? list : []
-  } catch (e) {
-    return []
-  }
-}
 
 const logs = (state, name) => state.frames.filter((f) => f.type === 'data' && f.json && f.json.e === name)
 const reqs = (state, t) => state.frames.filter((f) => f.type === 'data' && f.json && f.json.t === t)
@@ -286,149 +285,122 @@ const reqs = (state, t) => state.frames.filter((f) => f.type === 'data' && f.jso
 // --- tests ------------------------------------------------------------------
 
 const TAP = 'i=18-93cebd&a=taken&via=tap'
+const tsOf = (param) => Number((String(param).match(/(?:^|&)ts=(\d+)/) || [])[1])
 
-console.log('tap: a press is durable before any BLE work, and never gated on arming')
+console.log('tap: a press acks even when the tick is disarmed')
 {
-  // Defect 2: the tick is disarmed, the user presses a button anyway.
-  const storage = fakeStorage({ relay_armed: '0' })
-  const w = makeWatch({ storage })
+  const w = makeWatch({ storage: fakeStorage({ relay_armed: '0' }) })
   const st = await runWake(w, TAP)
   check('disarmed app still sends the ack', reqs(st, 'a').length === 1, JSON.stringify(st.frames))
-  check('ack carries id and action', (reqs(st, 'a')[0] || {}).json.i === '18-93cebd' && reqs(st, 'a')[0].json.a === 'taken')
-  check('disarmed app does not re-arm the chain', st.armedCalls === 0, String(st.armedCalls))
-  check('answered ack leaves the queue empty', queue(storage, 'relay_ackq').length === 0, storage.getItem('relay_ackq'))
-  check('tap.sent is reported to the relay', logs(st, 'tap.sent').length === 1, JSON.stringify(st.frames))
-  check('tap.received is reported before it', logs(st, 'tap.received').length === 1)
-}
-
-console.log('\ntap: a wake that never shakes loses nothing')
-{
-  // Defect 1/3: Bluetooth is there but the handshake never completes. The old code
-  // dropped the tap here with a local devLog nobody could read.
-  const storage = fakeStorage()
-  const w = makeWatch({ storage, respondShake: false })
-  const st = await runWake(w, TAP)
-  const q = queue(storage, 'relay_ackq')
-  check('tap is queued in storage', q.length === 1 && q[0].i === '18-93cebd', JSON.stringify(q))
-  check('no ack frame was sent', reqs(st, 'a').length === 0, JSON.stringify(st.frames))
-  // The handshake promise never settles when the phone is silent, so the callback never
-  // runs and no failure log is written either - the OS reaps the wake. What names the
-  // gap is a queued tap.received with no tap.sent beside it.
   check(
-    'the press is still recorded as received',
-    queue(storage, 'relay_logq').some((e) => e.e === 'tap.received'),
-    storage.getItem('relay_logq')
+    'ack carries id and action',
+    (reqs(st, 'a')[0] || {}).json.i === '18-93cebd' && reqs(st, 'a')[0].json.a === 'taken',
+    JSON.stringify(reqs(st, 'a'))
   )
-  check('no telemetry was sent into a dead link', st.frames.filter((f) => f.type === 'data').length === 0, JSON.stringify(st.frames))
+  check('disarmed app does not re-arm the tick chain', st.armedCalls === 0, String(st.armedCalls))
+  check('tap.received is reported', logs(st, 'tap.received').length === 1, JSON.stringify(st.frames))
+  check('tap.sent is reported with a lag', logs(st, 'tap.sent').length === 1 && logs(st, 'tap.sent')[0].json.lag >= 0)
+  check('a retry was armed first, then cancelled on the receipt',
+    st.carries.length === 1 && st.cancelledAlarms.length === 1 && st.cancelledAlarms[0] === st.carries[0].id,
+    JSON.stringify({ carries: st.carries, cancelled: st.cancelledAlarms }))
 }
 
-console.log('\ntap: the same press twice is one queued answer')
+console.log('\ntap: the next attempt is armed BEFORE the link is touched')
 {
-  const storage = fakeStorage()
-  const dead = makeWatch({ storage, respondShake: false })
-  await runWake(dead, TAP)
-  await runWake(dead, TAP)
-  check('duplicate taps collapse', queue(storage, 'relay_ackq').length === 1, storage.getItem('relay_ackq'))
+  // The measured failure: the side never answers the shake, the wake is reaped, and no
+  // storage it wrote survives the context. The alarm is the only thing that carries.
+  const w = makeWatch({ respondShake: false })
+  const st = await runWake(w, TAP)
+  check('a carry alarm is armed', st.carries.length === 1, JSON.stringify(st.carries))
+  check(
+    'it carries id, action, press time and attempt',
+    /^retry=1&i=18-93cebd&a=taken&ts=\d+&n=1$/.test((st.carries[0] || {}).param || ''),
+    (st.carries[0] || {}).param
+  )
+  check('the first retry is 90 s out', (st.carries[0] || {}).delaySec === 90, String((st.carries[0] || {}).delaySec))
+  check('nothing was sent into the dead link', st.frames.filter((f) => f.type === 'data').length === 0, JSON.stringify(st.frames))
+  check('the alarm it just armed was not cancelled', st.cancelledAlarms.length === 0, JSON.stringify(st.cancelledAlarms))
 }
 
-console.log('\ntap: the next alarm wake retries it and stops only on a receipt')
+console.log('\ntap: the retry wake answers the press and stops the chain')
 {
-  // The queued tap from the previous scenario, drained by a later poll wake.
-  const storage = fakeStorage()
-  const dead = makeWatch({ storage, respondShake: false })
-  await runWake(dead, TAP)
+  const dead = makeWatch({ respondShake: false })
+  const first = await runWake(dead, TAP)
+  const param = first.carries[0].param
 
-  const live = makeWatch({ storage })
-  const st = await runWake(live, 'via=alarm&mode=oneshot&show=0')
-  check('retried ack is sent on the next wake', reqs(st, 'a').length === 1, JSON.stringify(st.frames))
-  check('retried ack keeps its original id/action', (reqs(st, 'a')[0] || {}).json.i === '18-93cebd')
-  check('queue is empty once the phone answered', queue(storage, 'relay_ackq').length === 0, storage.getItem('relay_ackq'))
-  check('tap.sent follows the retry', logs(st, 'tap.sent').length === 1, JSON.stringify(st.frames))
-  check('the wake still polled', reqs(st, 'poll').length === 1)
+  const live = makeWatch()
+  const st = await runWake(live, param)
+  check('the carried param is dispatched as a tap', reqs(st, 'a').length === 1, JSON.stringify(st.frames))
+  const ack = reqs(st, 'a')[0].json
+  check('it keeps the original id and action', ack.i === '18-93cebd' && ack.a === 'taken', JSON.stringify(ack))
+  check('it keeps the ORIGINAL press time', ack.ts === tsOf(param), `${ack.ts} vs ${tsOf(param)}`)
+  check('it reports tap.received with the attempt', logs(st, 'tap.received').length === 1 && logs(st, 'tap.received')[0].json.try === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
+  check('it reports tap.retry', logs(st, 'tap.retry').length === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
+  check('the lag measures from the original press', logs(st, 'tap.sent').length === 1 && logs(st, 'tap.sent')[0].json.lag >= 0)
+  check('the next attempt is armed then cancelled',
+    st.carries.length === 1 && st.cancelledAlarms[0] === st.carries[0].id,
+    JSON.stringify({ carries: st.carries, cancelled: st.cancelledAlarms }))
+  check('a retry wake does not poll', reqs(st, 'poll').length === 0, JSON.stringify(reqs(st, 'poll')))
+  check('the attempt number advances', /n=2$/.test(st.carries[0].param), st.carries[0].param)
 }
 
-console.log('\ntap: an unreachable ack stays queued (at-least-once, not at-most-once)')
+console.log('\ntap: an unanswered ack keeps the chain armed')
 {
-  const storage = fakeStorage()
-  // Handshake works, but the phone never answers the ack request.
-  const mute = makeWatch({ storage, respondRequest: false })
+  // Handshake fine, the phone never answers the ack request. The next attempt must stay
+  // in the OS, or this is the loss the whole change exists to prevent.
+  const mute = makeWatch({ respondRequest: false })
   const st = await runWake(mute, TAP)
-  check('ack survives a missing answer', queue(storage, 'relay_ackq').length === 1, storage.getItem('relay_ackq'))
-  check('the relay saw tap.received', logs(st, 'tap.received').length === 1, JSON.stringify(st.frames))
-  check('...and no tap.sent, which is what names the gap', logs(st, 'tap.sent').length === 0, JSON.stringify(st.frames))
+  check('the ack was sent', reqs(st, 'a').length === 1, JSON.stringify(st.frames))
+  check('the armed attempt is NOT cancelled', st.cancelledAlarms.length === 0, JSON.stringify(st.cancelledAlarms))
+  check('the relay saw tap.received', logs(st, 'tap.received').length === 1)
+  check('...and no tap.sent, which is what names the gap', logs(st, 'tap.sent').length === 0)
+}
+
+console.log('\ntap: retries stop at the bound')
+{
+  const w = makeWatch({ respondShake: false })
+  const st = await runWake(w, 'retry=1&i=18-93cebd&a=taken&ts=1794281003964&n=40')
+  check('no further alarm is armed at the bound', st.carries.length === 0, JSON.stringify(st.carries))
+  check('the exhaustion is logged on the watch', st.devlog.some((l) => l.indexOf('retries exhausted') >= 0), JSON.stringify(st.devlog))
 }
 
 console.log('\ntap: an unparseable press is still visible')
 {
-  const storage = fakeStorage()
-  const w = makeWatch({ storage })
+  const w = makeWatch()
   const st = await runWake(w, 'i=&a=taken')
-  check('tap-no-id is queued', queue(storage, 'relay_logq').some((e) => e.e === 'tap-no-id'), storage.getItem('relay_logq'))
-  check('tap-no-id sends no ack', reqs(st, 'a').length === 0, JSON.stringify(st.frames))
-
-  const live = makeWatch({ storage })
-  const st2 = await runWake(live, 'via=alarm&mode=oneshot&show=0')
-  check('tap-no-id reaches the relay on the next wake', logs(st2, 'tap-no-id').length === 1, JSON.stringify(st2.frames))
+  check('tap-no-id reaches the relay on the same wake', logs(st, 'tap-no-id').length === 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
+  check('tap-no-id sends no ack', reqs(st, 'a').length === 0)
+  check('tap-no-id arms no retry', st.carries.length === 0, JSON.stringify(st.carries))
 }
 
 console.log('\ntelemetry: tick.wake is observable (defect 4)')
 {
-  const storage = fakeStorage()
-  const w = makeWatch({ storage })
+  const w = makeWatch()
   const st = await runWake(w, 'via=alarm&mode=oneshot&show=0')
   const wakes = logs(st, 'tick.wake')
   check('tick.wake is sent after the handshake', wakes.length === 1, JSON.stringify(st.frames))
   check('tick.wake carries the chain verdict', wakes.length === 1 && typeof wakes[0].json.chain === 'string', JSON.stringify(wakes))
   check('tick.wake is sent with the learned side port', wakes.length === 1 && wakes[0].port2 === SIDE_PORT, wakes.length ? String(wakes[0].port2) : '-')
-  check('log queue is empty afterwards', queue(storage, 'relay_logq').length === 0, storage.getItem('relay_logq'))
   check('dispatch is one poll', reqs(st, 'poll').length === 1)
 }
 
-console.log('\ntelemetry: a wake with no link reports on the next one instead of vanishing')
+console.log('\ntelemetry: a wake with no link cannot report, and does not pretend to')
 {
-  const storage = fakeStorage()
-  const dead = makeWatch({ storage, respondShake: false })
-  const st0 = await runWake(dead, 'via=alarm&mode=oneshot&show=0')
-  check('tick.wake is kept for later', queue(storage, 'relay_logq').some((e) => e.e === 'tick.wake'), storage.getItem('relay_logq'))
-  check('nothing left the watch', st0.frames.filter((f) => f.type === 'data').length === 0, JSON.stringify(st0.frames))
-
-  const live = makeWatch({ storage })
-  const st = await runWake(live, 'via=alarm&mode=oneshot&show=0')
-  check('the backlog is flushed once a link exists', logs(st, 'tick.wake').length >= 1, JSON.stringify(st.frames.map((f) => f.json && f.json.e)))
-  check('the backlog does not survive the flush', queue(storage, 'relay_logq').length === 0, storage.getItem('relay_logq'))
+  const w = makeWatch({ respondShake: false })
+  const st = await runWake(w, 'via=alarm&mode=oneshot&show=0')
+  check('nothing left the watch', st.frames.filter((f) => f.type === 'data').length === 0, JSON.stringify(st.frames))
+  // The handshake never settles, so the callback never runs: the wake is reaped with its
+  // buffered telemetry. The chain must still have been re-armed before BLE, or a dead
+  // link would end the tick forever.
+  check('the chain was re-armed before the link was touched', st.armedCalls === 1, String(st.armedCalls))
 }
 
 console.log('\nboot: a disarmed tick still exits without BLE work')
 {
-  const storage = fakeStorage({ relay_armed: '0' })
-  const w = makeWatch({ storage })
+  const w = makeWatch({ storage: fakeStorage({ relay_armed: '0' }) })
   const st = await runWake(w, 'via=alarm&mode=oneshot&show=0')
   check('disarmed tick sends no frames', st.frames.length === 0, JSON.stringify(st.frames))
   check('disarmed tick does not re-arm', st.armedCalls === 0, String(st.armedCalls))
-}
-
-console.log('\nqueue mechanics (shared/outbox.js)')
-{
-  const { createOutbox } = outboxModule
-  const storage = fakeStorage()
-  const acks = createOutbox(storage, 'q', 3, (e) => e.i + '|' + e.a)
-  acks.push({ i: '1', a: 'yes', ts: 1 })
-  acks.push({ i: '1', a: 'yes', ts: 2 })
-  check('same (id, action) replaces, not duplicates', acks.size() === 1, storage.getItem('q'))
-  check('the newer press wins', acks.list()[0].ts === 2, storage.getItem('q'))
-  acks.push({ i: '2', a: 'no', ts: 3 })
-  acks.push({ i: '3', a: 'no', ts: 4 })
-  acks.push({ i: '4', a: 'no', ts: 5 })
-  check('cap keeps the newest entries', acks.size() === 3 && acks.list()[2].i === '4', storage.getItem('q'))
-  check('take(n) drops exactly what was handed over', acks.take(2) === 1 && acks.list()[0].i === '4', storage.getItem('q'))
-  storage.setItem('q', '{not json')
-  check('corrupt storage is read as empty, not fatal', acks.size() === 0, storage.getItem('q'))
-
-  const logsQ = createOutbox(storage, 'l', 2, null)
-  logsQ.push({ e: 'a' })
-  logsQ.push({ e: 'b' })
-  logsQ.push({ e: 'c' })
-  check('append-only queue drops the oldest', logsQ.list().map((x) => x.e).join('') === 'bc', storage.getItem('l'))
 }
 
 console.log('\n%d passed, %d failed', passed, failed.length)

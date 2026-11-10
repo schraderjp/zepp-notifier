@@ -445,6 +445,44 @@ export function armNextOneshot(show, delaySec) {
   return setTickAlarm({ mode: MODE_ONESHOT, show, delaySec: delaySec || readCadence() })
 }
 
+// --- carrying data across wakes ---------------------------------------------
+//
+// An alarm is the ONLY durable store on this device. Storage is per-context (measured:
+// "localStorage caches per JS context (service lines lost on service death)", and
+// "page and service localStorage are separate stores" - docs/findings.md), and a
+// single-execution wake is capped at 600 ms, so a write made by a wake that then dies is
+// not visible to the next one. Alarm records are OS state: they survive the context, and
+// with store:true a reboot, and their `param` is delivered to the wake they produce.
+//
+// So anything that must be *carried* - today a button press whose ack could not be
+// delivered - travels as an alarm param and is re-armed by the wake that receives it.
+// Shape is the measured one (`url` + `delay`, the shape the OS actually honours).
+export function setCarryAlarm(param, delaySec) {
+  const result = trySet({
+    url: NOTIFIER_SERVICE,
+    param: String(param || '').slice(0, 160),
+    store: STORE,
+    delay: clampDelay(delaySec),
+  })
+  if (result.ok) rememberId(result.id)
+  return result
+}
+
+// Cancel one alarm we set, by the id setCarryAlarm() returned. Used to stop a retry
+// chain the moment its work is confirmed; failure is harmless (a duplicate wake re-sends
+// an ack the relay and the phone both collapse).
+export function cancelAlarm(id) {
+  const n = Number(id)
+  if (isNaN(n)) return false
+  try {
+    alarmMgr.cancel(n)
+  } catch (e) {
+    return false
+  }
+  forgetId(n)
+  return true
+}
+
 // --- diagnostics ------------------------------------------------------------
 
 export function alarmDump() {

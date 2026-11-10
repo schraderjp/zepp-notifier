@@ -30,7 +30,7 @@ const OUTBOX_MAX = 20
 const DEVICE = 'active-2-square'
 // Reported with side.online so the trace names the build that produced it. Keep it
 // equal to app.json's version.name: the side ships inside the same package.
-const SIDE_VERSION = '0.9.3'
+const SIDE_VERSION = '0.9.4'
 
 const mb = new MessageBuilder()
 
