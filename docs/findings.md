@@ -1241,3 +1241,31 @@ link; the side not running; the side's reply lost (fixed by the try/catch); `exi
 action context taking the repeating alarm (fixed by not exiting from action contexts); the action
 being routed to a page that had no `onInit` (fixed); and an action aimed at an app-service doing
 nothing at all (bypassed by aiming at the page, which is what the reference app does).
+
+### Overnight 2026-11-10/11: the schedule held; the slowness was `notify()` returning 0
+
+First full night on the heartbeat (0.9.20):
+
+```
+1178 wakes, 19.5 h, median gap 60 s
+ids [4652] on every wake, pending: 1 on every wake
+one gap > 2 min: 240 s at 03:09, ending exactly at side.online {requests: 0} 03:13:12
+```
+
+So the alarm never stopped. The single gap is the **phone side restarting** (Android killed and
+relaunched the Zepp app): `tick.wake` travels through the phone, so a dead side makes the watch's
+wakes invisible no matter how faithfully they fire. It resumed with no app open and no re-arm -
+the thing that was impossible with a one-deep chain.
+
+Both overnight notifications took ~115 s, and the cause is now identified: the poll served the
+item (`count: 1`), `notify()` returned **0**, `render()` skipped it, the relay re-served it and the
+next wake rendered it 60 s later. The refusal was only written to the device log, so from the
+relay it was indistinguishable from a served-and-lost frame - and from a slow tick.
+
+0.9.21 reports it: `notify.failed {id, why, got}`, queued in `render()` and drained before the
+poll wake exits (the early flush happens before the poll, so a queued line would otherwise die
+with the context). The rate of refusals is now measurable, which is the difference between "the
+OS declines to render and we retry" and "the frame vanished".
+
+Still true and worth keeping an eye on: three side instances were alive simultaneously overnight
+(`cache.refresh` request counters 21, 329-639, 860). Harmless, but only one answers polls.

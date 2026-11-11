@@ -9,6 +9,14 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
+**0.9.21** (code 88) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.21-20261111091620.zab`). The overnight log on 0.9.20 was
+clean — 1178 wakes, median 60 s, one record, `pending: 1` throughout, and the only gap (240 s at
+03:09) ended exactly when the phone side restarted — but both notifications took ~115 s because
+`notify()` returned 0 on the first serve and the item was rendered on the re-serve. That refusal
+was device-log only; 0.9.21 reports `notify.failed {id, why, got}` to the relay and drains it
+before the poll wake exits.
+
 **0.9.20** (code 87) is **installed and working** — the first build where a press is answered
 reliably end to end. Measured 12:34: `notify.rendered` → press → `tap.received via: request` →
 `ack.received appended: true` → `ack.sent` in 920 ms, with the page-armed carrier cancelled

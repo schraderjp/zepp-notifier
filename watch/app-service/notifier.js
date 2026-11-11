@@ -368,6 +368,11 @@ function render(items) {
       })
       if (!centreId) {
         devLog('notify.failed ' + n.id + ' return 0')
+        // Visible at the relay, not just on the wrist. A notification the OS REFUSED looks
+        // exactly like one that was served and lost, and both look like "the tick is slow":
+        // measured overnight, two of two notifications took 115 s because the first serve
+        // rendered nothing and the next one did. Report the refusal so the rate is measurable.
+        queueLog({ t: MSG.LOG, e: 'notify.failed', id: n.id, why: 'zero', got: list.length })
         continue
       }
       shown++
@@ -375,6 +380,7 @@ function render(items) {
       centre[n.id] = centreId
     } catch (e) {
       devLog('notify.failed ' + n.id + ' ' + e)
+      queueLog({ t: MSG.LOG, e: 'notify.failed', id: n.id, why: String(e).slice(0, 60) })
     }
   }
   render.last = rendered
@@ -537,6 +543,9 @@ function tick(param) {
             devLog('seen.send.fail ' + e)
           }
         }
+        // Drain anything render() queued (notify.failed). The early flush happens before the
+        // poll, so without this a refusal would only ever be visible on the wrist.
+        flushLogs()
         // Nothing to drain here any more: an unanswered press carries itself in an
         // alarm (see tap()), so a poll wake has no backlog to retry.
         quit('poll')

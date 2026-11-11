@@ -223,6 +223,9 @@ async function runWake(watch, param) {
     '@zos/notification': {
       notify: (o) => {
         state.notifications.push(o)
+        // `notifyReturnsZero` models the measured refusal: the OS declines to create the
+        // notification and returns 0, so the item must stay unrendered for the relay to re-serve.
+        if (opts.notifyReturnsZero) return 0
         return state.notifications.length + 100
       },
       cancel: (ids) => {
@@ -463,6 +466,24 @@ console.log('\na tap cannot end the schedule')
   const lost = await runWake(empty, TAP)
   const rearm = logs(lost, 'tap.rearm')
   check('a tap restores a heartbeat that is gone', rearm.length === 1 && rearm[0].json.ok === 1, JSON.stringify(rearm[0] && rearm[0].json))
+}
+
+console.log('\nrender: a notification the OS refuses is reported, not silently skipped')
+{
+  const item = { id: '41-abcdef', title: 'Medication', body: 'take it', vibrate: 2, actions: [{ id: 'yes', label: 'yes' }] }
+  const ok = makeWatch()
+  ok.opts.items = [item]
+  const good = await runWake(ok, 'via=alarm&mode=oneshot&hb=1')
+  check('a normal render reports nothing failed', logs(good, 'notify.failed').length === 0, '')
+  check('a normal render is reported as rendered', logs(good, 'notify.rendered').length === 1 || reqs(good, 'seen').length === 1, '')
+
+  const bad = makeWatch({ notifyReturnsZero: true })
+  bad.opts.items = [item]
+  const refused = await runWake(bad, 'via=alarm&mode=oneshot&hb=1')
+  const ev = logs(refused, 'notify.failed')
+  check('a refused notification is reported to the relay', ev.length === 1, String(ev.length))
+  check('it names the item and the reason', ev[0] && ev[0].json.id === '41-abcdef' && ev[0].json.why === 'zero', JSON.stringify(ev[0] && ev[0].json))
+  check('nothing is claimed as rendered', reqs(refused, 'seen').length === 0, '')
 }
 
 console.log('\nbuttons: an action targets the page, not the app-service')
