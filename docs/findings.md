@@ -1269,3 +1269,29 @@ OS declines to render and we retry" and "the frame vanished".
 
 Still true and worth keeping an eye on: three side instances were alive simultaneously overnight
 (`cache.refresh` request counters 21, 329-639, 860). Harmless, but only one answers polls.
+
+### Auto-closing the app after answering a press
+
+Buttons target `page/index`, so a press opens the Mini Program. Nobody wants to dismiss it by
+hand, and `@zos/router` provides `exit()` - documented as *"Exit the Mini Program and return to
+the applist page"*, API level 2.0+. So the page closes itself.
+
+Two timers, both in `handleLaunchTap()`:
+
+* **~900 ms after the request settles** (resolve or reject) - long enough for the one-line
+  confirmation to be readable, and the settle point is the right moment because a resolved
+  request means the side already answered, so the answer is durable;
+* **a 4 s backstop armed before the request** - if the request never settles, the app still
+  closes. A page reached from a notification must not be able to strand the user.
+
+A failure closes too: the carrier alarm is armed before the request, so a send that fails
+resolves itself a minute later. Leaving the app open would be asking the user to dismiss a
+window they never opened.
+
+`setTimeout` is available in a page (the arm-check already uses it) and is **not** available in
+the App Service - which is the whole reason the press is answered here.
+
+Build note: the helper had to be lifted above the request chain. `requestOnce` settles
+synchronously when the send throws, so the `.finally()` callback could run before the `const`
+was initialised (TDZ ReferenceError) - the same class of trap as the flush-ordering bug, caught
+this time by checking declaration order rather than by a wake going silent.

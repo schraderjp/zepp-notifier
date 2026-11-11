@@ -9,7 +9,13 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.21** (code 88) is **built, not installed**
+**0.9.22** (code 89) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.22-20261111093254.zab`). A press opens the app because buttons
+target the page; it now closes itself again - ~900 ms after the ack settles, with a 4 s backstop
+if the request never settles, via `@zos/router` `exit()`. A failed send also closes, since the
+carrier alarm retries in the background. No change to the answering path itself.
+
+**0.9.21** (code 88)
 (`dist/10262217-Notify_Relay-0.9.21-20261111091620.zab`). The overnight log on 0.9.20 was
 clean — 1178 wakes, median 60 s, one record, `pending: 1` throughout, and the only gap (240 s at
 03:09) ended exactly when the phone side restarted — but both notifications took ~115 s because

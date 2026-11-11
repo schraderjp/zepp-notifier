@@ -15,7 +15,7 @@
 // y=40 (drawing at y=16 was clipped by the status bar in the first version).
 
 import * as ui from '@zos/ui'
-import { push } from '@zos/router'
+import { push, exit as exitApp } from '@zos/router'
 import { notify } from '@zos/notification'
 import { getPackageInfo } from '@zos/app'
 import { MSG, decodeActionParam, encodeActionParam } from '../shared/protocol'
@@ -103,6 +103,23 @@ Page({
       carry = setCarryAlarm('retry=1&' + encodeActionParam({ i, a }) + '&ts=' + ts + '&n=1', 90)
       appendDevLog('page tap carry=' + (carry && carry.ok ? carry.id : 'FAIL'))
     } catch (e) {}
+    // CLOSE THE APP again, because it was opened by a press and nobody asked to see it.
+    // Two timers on purpose: the normal path closes ~1 s after the attempt settles (long
+    // enough to read the one-line confirmation), and a 4 s backstop closes even if the request
+    // never settles - a page reached from a notification must not be able to strand the user.
+    // `setTimeout` is available in a page (the arm-check uses it); it is NOT available inside
+    // the App Service, which is why the press is answered here in the first place.
+    const closeAfter = (ms) => {
+      try {
+        setTimeout(() => {
+          try {
+            exitApp()
+          } catch (e) {}
+        }, ms)
+      } catch (e) {}
+    }
+    closeAfter(4000)
+
     mb.request({ t: MSG.ACK, i, a, ts }, { timeout: 6000 })
       .then(() => {
         appendDevLog('page tap ok ' + i)
@@ -110,17 +127,26 @@ Page({
           if (carry && carry.ok && Number(carry.id) > 0) cancelAlarm(carry.id)
         } catch (e) {}
         try {
-          this.hint.setProperty(ui.prop.TEXT, ('answered from the app: ' + a).slice(0, 46))
+          this.hint.setProperty(ui.prop.TEXT, ('answered: ' + a).slice(0, 46))
         } catch (e) {}
       })
       .catch((err) => {
         appendDevLog('page tap fail ' + ((err && (err.reason || err.message)) || err))
+        // Still close. The carrier alarm is armed on the phone side of this flow, so a failed
+        // send resolves itself in a minute; leaving the app open would make the user dismiss a
+        // window they never asked for.
+        try {
+          this.hint.setProperty(ui.prop.TEXT, 'answer queued - will retry')
+        } catch (e) {}
       })
       .finally(() => {
         try {
           mb.disConnect()
         } catch (e) {}
+        closeAfter(900)
       })
+
+
   },
 
   build() {
