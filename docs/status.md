@@ -9,7 +9,12 @@
 **0.9.5** (code 72) is on the wrist. It only removed a duplicate `ack.received`, so
 everything below about 0.9.4 still applies.
 
-**0.9.22** (code 89) is **built, not installed**
+**0.9.23** (code 90) is **built, not installed**
+(`dist/10262217-Notify_Relay-0.9.23-20261111093525.zab`). Auto-close now uses `router.home()`
+("exit the Mini Program and return to the watchface page") instead of `router.exit()` (which
+returns to the app list), falling back to `exit()` if the firmware lacks `home`.
+
+**0.9.22** (code 89)
 (`dist/10262217-Notify_Relay-0.9.22-20261111093254.zab`). A press opens the app because buttons
 target the page; it now closes itself again - ~900 ms after the ack settles, with a 4 s backstop
 if the request never settles, via `@zos/router` `exit()`. A failed send also closes, since the

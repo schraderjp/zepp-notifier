@@ -15,7 +15,7 @@
 // y=40 (drawing at y=16 was clipped by the status bar in the first version).
 
 import * as ui from '@zos/ui'
-import { push, exit as exitApp } from '@zos/router'
+import * as router from '@zos/router'
 import { notify } from '@zos/notification'
 import { getPackageInfo } from '@zos/app'
 import { MSG, decodeActionParam, encodeActionParam } from '../shared/protocol'
@@ -113,7 +113,12 @@ Page({
       try {
         setTimeout(() => {
           try {
-            exitApp()
+            // home() returns to the WATCHFACE ("exit the Mini Program and return to the
+            // watchface page", API 2.0+); exit() would drop you on the app list instead, which
+            // is a screen you did not ask for. Guarded because a missing member on an older
+            // firmware must degrade to exit(), not throw inside a timer.
+            if (router && typeof router.home === 'function') router.home()
+            else router.exit()
           } catch (e) {}
         }, ms)
       } catch (e) {}
@@ -213,7 +218,7 @@ Page({
     button(166, 'Arm notifications', () => this.arm(MODE_ONESHOT, 30), 0x1c5c34)
     this.cadenceBtn = button(222, 'Cadence: ...', () => this.cycleCadence(), 0x3d3d3d)
     button(278, 'Disarm', () => this.disarm())
-    button(334, 'Device log  >', () => push({ url: 'page/log' }), 0x3d3d3d)
+    button(334, 'Device log  >', () => router.push({ url: 'page/log' }), 0x3d3d3d)
 
     this.summary = ui.createWidget(ui.widget.TEXT, {
       x: MARGIN,

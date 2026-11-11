@@ -1295,3 +1295,21 @@ Build note: the helper had to be lifted above the request chain. `requestOnce` s
 synchronously when the send throws, so the `.finally()` callback could run before the `const`
 was initialised (TDZ ReferenceError) - the same class of trap as the flush-ordering bug, caught
 this time by checking declaration order rather than by a wake going silent.
+
+### `home()` is the watchface; `exit()` is the app list
+
+Correction to the auto-close implementation: `@zos/router` has **two** ways out of a Mini Program,
+and they land in different places.
+
+| call | documented effect |
+|---|---|
+| `router.exit()` | "Exit the Mini Program and return to the **applist** page" |
+| `router.home()` | "Exit the Mini Program and return to the **watchface** page" |
+
+Both are API level 2.0+, so both are available to us (we target 4.0). A press opens the app and
+the app closes itself, so the only sensible destination is where the user was looking before -
+the watchface, i.e. `home()`.
+
+0.9.23 switches to `home()`, guarded: `if (typeof router.home === 'function') router.home() else
+router.exit()`. A missing member on an older firmware has to degrade to the app list, not throw
+inside a `setTimeout` where nothing would catch it.
